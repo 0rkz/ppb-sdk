@@ -1,0 +1,24 @@
+{
+  "name": "@ppb/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for the Pay-Per-Byte Protocol",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "abis"],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest",
+    "lint": "eslint src/"
+  },
+  "dependencies": {
+    "viem": "^2.20.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.14.0",
+    "vitest": "^2.0.0"
+  },
+  "keywords": ["ppb", "pay-per-byte", "m2m", "depin", "arbitrum"],
+  "license": "MIT"
+}
