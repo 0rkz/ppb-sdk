@@ -23,17 +23,19 @@ export const ARBITRUM_SEPOLIA: NetworkConfig = {
   rpcUrl: 'https://sepolia-rollup.arbitrum.io/rpc',
   contracts: {
     ppbToken: '0x37a86eD3ee87109ff8cF96B3fe45c70a2ebB69f3',
-    dataRegistry: '0x843dB94cE859Ef1D09CFB4faFF9C18F25ea51b1f',
+    dataRegistry: '0x05D89769A066549115b1B4408bFf899D2737F30b',
     schemaRegistry: '0x2e490F33180F3d387d46c213ADf776135c052acf',
-    dataStream: '0xD6a63F1f208363F2BF40021a0083651aaD206D3a',
+    dataStream: '0x7E12bF2B0d43B9Ea0Bc37A06EcAC36b810351F35',
     streamSubscription: '0xcd3521E655ED4070BD95740cf610E955965B575d',
-    reputationEngine: '0xCd22F0dBB3180Edc84d33cE249E332F2f7BeD1D0',
+    reputationEngine: '0x3b842Aac0b932D546ed6C87895350EaeF0bEbcc3',
     dividendPool: '0xd0977A118Fec0fEb5F48F0D713f509cB2032688b',
     burnEngine: '0xFDD2aD56042156da2E09451A91BB8637be6cfA22',
     relayRegistry: '0xFADfB804F76A4FBcB44ACf72519A403A9ff02618',
     pqsVerifier: '0x67F97fc5E45889d3BFf7dcBA114Ca210f1896b0d',
+    validatorRegistry: '0xEd0Ffa5201994cAC3e17566f445C5D0d0103F016',
+    testnetFaucet: '0x19d25F286b8Dca21886bCBe9c21334C6F0C532FB',
   },
-  indexerUrl: '',
+  indexerUrl: 'http://localhost:8080',
 };
 
 export const ARBITRUM_ONE: NetworkConfig = {
