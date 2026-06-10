@@ -1,8 +1,8 @@
-import type { SearchParams, PublisherListing, PQSScore, PublisherInfo } from './types';
+import type { SearchParams, PublisherListing, PublisherInfo } from './types';
 
 /**
  * Mercat — Publisher marketplace search and discovery.
- * Reads from the PPB Indexer REST API.
+ * Reads from the BYTE Library indexer REST API.
  */
 export class Mercat {
   private indexerUrl: string;
@@ -12,12 +12,11 @@ export class Mercat {
   }
 
   /**
-   * Search for publishers by topic, PQS, price, etc.
+   * Search for publishers by topic, price, class, etc.
    */
   async search(params: SearchParams = {}): Promise<PublisherListing[]> {
     const query = new URLSearchParams();
     if (params.topic) query.set('topic', params.topic);
-    if (params.minPQS) query.set('minPQS', params.minPQS.toString());
     if (params.maxPricePerKB) query.set('maxPrice', params.maxPricePerKB.toString());
     if (params.publisherClass) query.set('class', params.publisherClass);
     if (params.sortBy) query.set('sort', params.sortBy);
@@ -26,7 +25,7 @@ export class Mercat {
 
     const res = await fetch(`${this.indexerUrl}/publishers?${query}`);
     if (!res.ok) throw new Error(`Indexer error: ${res.status}`);
-    return await res.json();
+    return (await res.json()) as PublisherListing[];
   }
 
   /**
@@ -34,28 +33,18 @@ export class Mercat {
    */
   async getPublisher(address: string): Promise<{
     info: PublisherInfo;
-    pqs: PQSScore;
     schema: any;
   }> {
     const res = await fetch(`${this.indexerUrl}/publisher/${address}`);
     if (!res.ok) throw new Error(`Indexer error: ${res.status}`);
-    return await res.json();
-  }
-
-  /**
-   * Get PQS score breakdown for a publisher.
-   */
-  async getPQS(address: string): Promise<PQSScore> {
-    const res = await fetch(`${this.indexerUrl}/publisher/${address}/pqs`);
-    if (!res.ok) throw new Error(`Indexer error: ${res.status}`);
-    return await res.json();
+    return (await res.json()) as { info: PublisherInfo; schema: any };
   }
 
   /**
    * Get top publishers by topic.
    */
   async getTop(topic: string, limit: number = 10): Promise<PublisherListing[]> {
-    return this.search({ topic, sortBy: 'pqs', limit });
+    return this.search({ topic, sortBy: 'subscribers', limit });
   }
 
   /**
@@ -64,6 +53,6 @@ export class Mercat {
   async health(): Promise<{ synced: boolean; latestBlock: number; indexerCount: number }> {
     const res = await fetch(`${this.indexerUrl}/health`);
     if (!res.ok) throw new Error(`Indexer error: ${res.status}`);
-    return await res.json();
+    return (await res.json()) as { synced: boolean; latestBlock: number; indexerCount: number };
   }
 }

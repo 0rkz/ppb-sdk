@@ -16,31 +16,60 @@ import { arbitrumSepolia, arbitrum, foundry } from 'viem/chains';
 const DataRegistryABI = require('../abis/DataRegistry.json');
 const SchemaRegistryABI = require('../abis/SchemaRegistry.json');
 const DataStreamABI = require('../abis/DataStream.json');
-const StreamSubscriptionABI = require('../abis/StreamSubscription.json');
-const ReputationEngineABI = require('../abis/ReputationEngine.json');
-const PPBTokenABI = require('../abis/PPBToken.json');
-const DividendPoolABI = require('../abis/DividendPool.json');
-const PQSVerifierABI = require('../abis/PQSVerifier.json');
 
 export interface NetworkConfig {
   chainId: number;
   rpcUrl: string;
   contracts: {
-    ppbToken: `0x${string}`;
     dataRegistry: `0x${string}`;
     schemaRegistry: `0x${string}`;
     dataStream: `0x${string}`;
-    streamSubscription: `0x${string}`;
-    reputationEngine: `0x${string}`;
-    dividendPool: `0x${string}`;
-    burnEngine: `0x${string}`;
-    relayRegistry: `0x${string}`;
-    pqsVerifier: `0x${string}`;
+    /**
+     * Settlement USDC (ERC-20) for the on-chain BYTE Library leg. In the r2
+     * direct-allowance model the subscriber approves this token to DataStream
+     * (allowance cap); the publisher's streamData / streamBroadcast then
+     * transferFrom-pulls the exact per-message fee directly from the subscriber.
+     * There is NO escrow contract. This is SEPARATE from the x402 gateway USDC
+     * (which comes from the 402 accepts[] at runtime — see GatewayClient).
+     */
+    usdc: `0x${string}`;
   };
   indexerUrl: string;
 }
 
-export interface PPBConfig {
+// Minimal ERC-20 ABI — just the surface the SDK needs to approve USDC and read
+// allowance for the direct-allowance settlement path.
+const ERC20_ABI = [
+  {
+    type: 'function',
+    name: 'approve',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'spender', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [{ name: '', type: 'bool' }],
+  },
+  {
+    type: 'function',
+    name: 'allowance',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'owner', type: 'address' },
+      { name: 'spender', type: 'address' },
+    ],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'decimals',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint8' }],
+  },
+] as const;
+
+export interface ByteConfig {
   network: NetworkConfig;
   account?: Account;
   privateKey?: `0x${string}`;
@@ -52,23 +81,23 @@ function getChain(chainId: number): Chain {
   return foundry;
 }
 
-export class PPBClient {
+export class ByteClient {
   readonly network: NetworkConfig;
-  readonly publicClient: PublicClient;
-  readonly walletClient: WalletClient | null;
+  // Use the concrete inferred client types from viem's factories. The bare
+  // `PublicClient`/`WalletClient` aliases collapse getContract's client
+  // intersection to `never` under viem 2.x, so we infer from the factory.
+  readonly publicClient: ReturnType<typeof createPublicClient>;
+  readonly walletClient: ReturnType<typeof createWalletClient> | null;
   readonly chain: Chain;
 
   // Contract instances
-  readonly ppbToken;
   readonly dataRegistry;
   readonly schemaRegistry;
   readonly dataStream;
-  readonly streamSubscription;
-  readonly reputationEngine;
-  readonly dividendPool;
-  readonly pqsVerifier;
+  /** Settlement USDC ERC-20 handle (approve / allowance / decimals). */
+  readonly usdc;
 
-  constructor(config: PPBConfig) {
+  constructor(config: ByteConfig) {
     this.network = config.network;
     this.chain = getChain(config.network.chainId);
 
@@ -89,37 +118,22 @@ export class PPBClient {
 
     const c = config.network.contracts;
 
-    this.ppbToken = getContract({
-      address: c.ppbToken, abi: PPBTokenABI as any,
-      client: { public: this.publicClient, wallet: this.walletClient! },
-    });
+    // Public client for reads, wallet client for writes. Typed as `any` to
+    // sidestep viem 2.x's getContract overload collapsing the dual-client
+    // intersection to `never`; runtime behavior is unchanged.
+    const client: any = { public: this.publicClient, wallet: this.walletClient! };
+
     this.dataRegistry = getContract({
-      address: c.dataRegistry, abi: DataRegistryABI as any,
-      client: { public: this.publicClient, wallet: this.walletClient! },
+      address: c.dataRegistry, abi: DataRegistryABI as any, client,
     });
     this.schemaRegistry = getContract({
-      address: c.schemaRegistry, abi: SchemaRegistryABI as any,
-      client: { public: this.publicClient, wallet: this.walletClient! },
+      address: c.schemaRegistry, abi: SchemaRegistryABI as any, client,
     });
     this.dataStream = getContract({
-      address: c.dataStream, abi: DataStreamABI as any,
-      client: { public: this.publicClient, wallet: this.walletClient! },
+      address: c.dataStream, abi: DataStreamABI as any, client,
     });
-    this.streamSubscription = getContract({
-      address: c.streamSubscription, abi: StreamSubscriptionABI as any,
-      client: { public: this.publicClient, wallet: this.walletClient! },
-    });
-    this.reputationEngine = getContract({
-      address: c.reputationEngine, abi: ReputationEngineABI as any,
-      client: { public: this.publicClient, wallet: this.walletClient! },
-    });
-    this.dividendPool = getContract({
-      address: c.dividendPool, abi: DividendPoolABI as any,
-      client: { public: this.publicClient, wallet: this.walletClient! },
-    });
-    this.pqsVerifier = getContract({
-      address: c.pqsVerifier, abi: PQSVerifierABI as any,
-      client: { public: this.publicClient, wallet: this.walletClient! },
+    this.usdc = getContract({
+      address: c.usdc, abi: ERC20_ABI as any, client,
     });
   }
 

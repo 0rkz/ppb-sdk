@@ -1,74 +1,130 @@
-# @ppb/sdk — Byte Protocol TypeScript SDK
+# @payperbyte/sdk — PayPerByte TypeScript SDK
 
-TypeScript SDK for interacting with the Pay-Per-Byte Protocol (Byte) on Arbitrum.
+TypeScript SDK for PayPerByte (the BYTE Library) — the verified, provenance-first data layer for AI agents. Discover first-party feeds, subscribe, stream payloads, and verify every payload against its on-chain EIP-712 attestation. No token; USDC settlement on Arbitrum.
 
 ## Installation
 
 ```bash
-npm install github:0rkz/ppb-sdk
+npm install github:0rkz/byte-sdk
 ```
 
 ## Quick Start
 
 ```typescript
-import { PPBClient } from "@ppb/sdk";
+import {
+  ByteClient,
+  Subscriber,
+  Mercat,
+  verifyPayload,
+  ARBITRUM_SEPOLIA,
+} from "@payperbyte/sdk";
 
-const client = new PPBClient({
-  rpcUrl: "https://sepolia-rollup.arbitrum.io/rpc",
-  network: "arbitrum-sepolia",
+// `network` is a NetworkConfig object (ARBITRUM_SEPOLIA / LOCAL_ANVIL),
+// not a string. RPC URL + contract addresses come from that config.
+const client = new ByteClient({ network: ARBITRUM_SEPOLIA });
+
+// Discover publishers and their feeds via the indexer (Mercat).
+const mercat = new Mercat(ARBITRUM_SEPOLIA.indexerUrl);
+const publishers = await mercat.search({ topic: "eth-price" });
+
+// Subscribe to a data feed — r2 DIRECT-ALLOWANCE model. There is NO escrow.
+// subscribe(publisher, allowanceUsdc) does two on-chain things:
+//   1. dataRegistry.subscribe(publisher)   — the social-registry flag, and
+//   2. usdc.approve(dataStream, cap)        — the spending cap the publisher's
+//      streamData/streamBroadcast transferFrom-pulls each per-message fee from.
+const subscriber = new Subscriber({
+  network: ARBITRUM_SEPOLIA,
+  privateKey: "0x...",
 });
+await subscriber.subscribe(publishers[0].address, 10.0); // $10 allowance cap
 
-// Browse publishers
-const publishers = await client.getPublishers();
-
-// Subscribe to a data feed
-await client.subscribe(publisherAddress, { privateKey: "0x..." });
-
-// Get publisher reputation
-const pqs = await client.getPQS(publisherAddress);
+// Verify received bytes against the publisher's on-chain attested hash.
+// Signature: verifyPayload(payloadBytes, expectedHash).
+// Throws HashMismatchError if the bytes don't match what was attested.
+verifyPayload(receivedBytes, message.payloadHash);
 ```
+
+## x402 keyless gateway (pay-per-call)
+
+For one-off, pay-per-call access there is the keyless x402 `GatewayClient`. A
+**wallet signs the payment** (gasless EIP-3009 `transferWithAuthorization` — the
+facilitator broadcasts and pays gas). There is **no API key**: the wallet is the
+credential. The `@x402/core` + `@x402/evm` packages are optional peer deps,
+loaded only if you use the gateway.
+
+```typescript
+import { privateKeyToAccount } from "viem/accounts";
+import { createPublicClient, http } from "viem";
+import { arbitrumSepolia } from "viem/chains";
+import { GatewayClient } from "@payperbyte/sdk";
+
+const account = privateKeyToAccount(process.env.AGENT_PRIVATE_KEY as `0x${string}`);
+const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http() });
+
+// Defaults to https://x402.payperbyte.io; pass baseUrl for local dev (:3402).
+const gw = new GatewayClient({ signer: account, publicClient });
+
+// Discover the catalog (free) — each feed carries its priceAtomic.
+const { feeds } = await gw.discover();
+
+// Pay-per-call a GET feed: unpaid → 402 → wallet signs USDC → retry → data.
+const { data, settlement, disclaimerCategory } = await gw.fetchFeed("crypto-top100");
+console.log(settlement?.transaction); // on-chain settlement tx hash
+
+// POST oracle (fact-oracle): subscriber_address must ALREADY be a registered,
+// allowance-granting on-chain subscriber (a prior Subscriber.subscribe) — the
+// answer is broadcast on-chain and its fee is pulled from that allowance.
+await gw.fetchFeed("fact-oracle", {
+  body: { question: "…", subscriber_address: account.address },
+});
+```
+
+> Two distinct USDC flows: the on-chain direct-allowance `approve(dataStream)` at
+> subscribe time (`Subscriber`) is independent of the x402 EIP-3009 sign at fetch
+> time (`GatewayClient`). `fact-oracle` needs the subscriber registered with a
+> live DataStream allowance first.
 
 ## Features
 
-- **Publisher discovery** — browse and search data feed publishers
-- **Subscription management** — subscribe, unsubscribe, check status
-- **Reputation queries** — PQS scores, tier info, dispute history
-- **Data streaming** — publish and receive data via DataStream
-- **Token operations** — PPB balance, approvals, staking
+- **Feed discovery** — browse and search first-party data feed publishers
+- **Subscription management** — subscribe, unsubscribe, check status; r2 direct-allowance USDC settlement (registry flag + `approve(dataStream)`, no escrow)
+- **Data streaming** — publish and receive payloads via DataStream
+- **Payload verification** — every payload carries an EIP-712 PayloadAttestation; verify `keccak256(bytes)` against the on-chain hash before acting on the data
+- **Provenance** — read publisher status, subscriber/message counts, and revenue from the on-chain registry
 
 ## Network Support
 
 | Network | Chain ID | Status |
 |---------|----------|--------|
 | Arbitrum Sepolia | 421614 | Live (testnet) |
-| Arbitrum One | 42161 | Planned (mainnet) |
+| Arbitrum One | 42161 | Planned (mainnet, audit-gated) |
 
-## Contract Addresses (Arbitrum Sepolia)
+## PayPerByte (BYTE Library)
 
-```
-PPBToken:          0x37a86eD3ee87109ff8cF96B3fe45c70a2ebB69f3
-DataRegistry:      0x05D89769A066549115b1B4408bFf899D2737F30b
-DataStream:        0x7E12bF2B0d43B9Ea0Bc37A06EcAC36b810351F35
-SchemaRegistry:    0x2e490F33180F3d387d46c213ADf776135c052acf
-ReputationEngine:  0x3b842Aac0b932D546ed6C87895350EaeF0bEbcc3
-PQSVerifier:       0x67F97fc5E45889d3BFf7dcBA114Ca210f1896b0d
-RelayRegistry:     0xFADfB804F76A4FBcB44ACf72519A403A9ff02618
-ValidatorRegistry: 0xEd0Ffa5201994cAC3e17566f445C5D0d0103F016
-TestnetFaucet:     0x19d25F286b8Dca21886bCBe9c21334C6F0C532FB
-```
+PayPerByte runs on the BYTE Library — a lean 3-contract core. No token; all settlement is in USDC via a direct-allowance model (the subscriber approves DataStream; the publisher transferFrom-pulls each per-message fee — there is no escrow contract). Each payload carries an EIP-712 `PayloadAttestation` so subscribers can confirm exactly what they received and from whom.
+
+| Contract | Role |
+|----------|------|
+| DataRegistryLib | Publisher registration, feed/subscriber discovery |
+| DataStreamLib | Per-call / per-byte payload delivery + settlement |
+| SchemaRegistry | Feed schema + methodology references |
+
+Contract addresses are resolved per-network by the SDK (`ARBITRUM_SEPOLIA`, `LOCAL_ANVIL`).
 
 ## Modules
 
-- `PPBClient` — main client with publisher, subscriber, and marketplace methods
-- `Publisher` — register, publish data, manage schema
-- `Subscriber` — subscribe, receive data, file disputes
-- `Mercat` — marketplace search and discovery (connects to indexer API)
+- `ByteClient` — low-level client holding the viem clients and contract instances (used by `Publisher`/`Subscriber`)
+- `Publisher` — register a feed, publish data, sign EIP-712 PayloadAttestations
+- `Subscriber` — subscribe, receive payloads, stream events
+- `verifyPayload` / `verifyEventPayload` / `fetchAndVerify` — subscriber-side payload verification against on-chain attestations
+- `Mercat` — feed search and discovery (connects to the indexer API)
+- `GatewayClient` — keyless x402 pay-per-call client (a wallet signs, not an API key); `discover`, `discoverResources`, `fetchFeed`
 
 ## Related
 
 - [byte-mcp-server](https://github.com/0rkz/byte-mcp-server) — MCP server for AI agent integration
-- [byte-x402-gateway](https://github.com/0rkz/byte-x402-gateway) — HTTP payment gateway via x402
-- [byte-discovery-api](https://github.com/0rkz/byte-discovery-api) — Agent discovery endpoint
+- [byte-x402-gateway](https://github.com/0rkz/byte-x402-gateway) — keyless x402 payment gateway (a wallet, not an API key)
+- [byte-discovery-api](https://github.com/0rkz/byte-discovery-api) — agent discovery endpoint
 
 ## License
 

@@ -1,29 +1,44 @@
-import { keccak256, toBytes, encodePacked, parseEther } from 'viem';
-import { PPBClient, type PPBConfig } from './client';
-import type { Schema, PublisherInfo, PublisherStats, TxResult, PQSScore } from './types';
+import { keccak256, toBytes, toHex, encodePacked, type Hex } from 'viem';
+import { ByteClient, type ByteConfig } from './client';
+import { canonicalBytes } from './canonical';
+import type { Schema, PublisherInfo, TxResult } from './types';
+
+const ATTESTATION_TTL_S = 300; // 5-minute attestation freshness window.
+
+/**
+ * EIP-712 PayloadAttestation type definition. Must match
+ * DataStreamLib.PAYLOAD_ATTESTATION_TYPEHASH literally.
+ */
+const PAYLOAD_ATTESTATION_TYPES = {
+  PayloadAttestation: [
+    { name: 'publisher', type: 'address' },
+    { name: 'payloadHash', type: 'bytes32' },
+    { name: 'payloadLength', type: 'uint256' },
+    { name: 'deadline', type: 'uint256' },
+  ],
+} as const;
 
 const STATUS_MAP = ['NONE', 'SANDBOX', 'ACTIVE', 'SUSPENDED', 'BANNED'] as const;
-const TIER_MAP = ['NEW', 'ESTABLISHED', 'TRUSTED', 'PREMIUM', 'ELITE'] as const;
 const CLASS_MAP = { MACHINE: 0, HUMAN: 1 } as const;
 const VTYPE_MAP = { RTD: 0, TIME_DELAYED: 1, UNVERIFIABLE: 2 } as const;
 
 export class Publisher {
-  private client: PPBClient;
+  private client: ByteClient;
 
-  constructor(config: PPBConfig) {
-    this.client = new PPBClient(config);
+  constructor(config: ByteConfig) {
+    this.client = new ByteClient(config);
   }
 
   /**
-   * Register a schema and publisher in one flow.
+   * Register a schema and publisher in one flow. No token, no stake —
+   * v1 BYTE Library settles in external USDC, registration is keyless.
    * 1. Registers schema in SchemaRegistry
-   * 2. Approves PPB spending
-   * 3. Registers publisher in DataRegistry with stake
+   * 2. Registers publisher in DataRegistry (no stake)
    */
-  async register(schema: Omit<Schema, 'methodologyHash'> & { methodology?: string }, stake: bigint): Promise<TxResult> {
+  async register(schema: Omit<Schema, 'methodologyHash'> & { methodology?: string }): Promise<TxResult> {
     const methodologyHash = schema.methodology
       ? keccak256(toBytes(schema.methodology))
-      : keccak256(toBytes(`ppb-publisher-${Date.now()}`));
+      : keccak256(toBytes(`byte-publisher-${Date.now()}`));
     const topicHash = keccak256(toBytes(schema.topic));
 
     // 1. Register schema
@@ -38,19 +53,22 @@ export class Publisher {
       schema.pricePerKB,
     ]);
 
-    // 2. Approve PPB for staking
-    await this.client.ppbToken.write.approve([
-      this.client.network.contracts.dataRegistry,
-      stake,
-    ]);
-
-    // 3. Register publisher
+    // 2. Register publisher. No token stake in v1: the on-chain
+    // registerPublisher(uint256 amount, bytes32 publicKey) signature is
+    // called with amount=0 (no economic stake; USDC is the only asset).
     const pubKeyHash = keccak256(encodePacked(
       ['address', 'uint256'],
       [this.client.account!, BigInt(Date.now())]
     ));
 
-    const tx = await this.client.dataRegistry.write.registerPublisher([stake, pubKeyHash]);
+    // r2 DataRegistryLib: registerPublisher(uint256 amount, bytes32 publicKey)
+    // safeTransferFrom-pulls the settlement token ONLY when amount > 0, and v1
+    // sets STAKE_FLOOR = 0 (no publisher bond). With amount=0 no approve is
+    // needed at register time. If a future (Phase B / BYTE Library Open) build
+    // passes amount>0, add an approve(dataRegistry, amount) on the settlement
+    // ERC-20 (this.client.usdc) BEFORE registerPublisher. Verified against
+    // contracts/src/library/DataRegistryLib.sol registerPublisher().
+    const tx = await this.client.dataRegistry.write.registerPublisher([0n, pubKeyHash]);
 
     const receipt = await this.client.publicClient.waitForTransactionReceipt({ hash: tx });
     return {
@@ -62,26 +80,76 @@ export class Publisher {
   }
 
   /**
-   * Publish data to a specific subscriber.
-   * Subscriber must have approved USDC to DataStream.
+   * Sign an EIP-712 PayloadAttestation for the active chain + DataStream
+   * contract. r2 (2026-05-23) — returns the 65-byte signature hex which the
+   * contract verifies before settling. The struct is emitted in the
+   * settlement event so subscribers can re-verify out-of-band.
+   */
+  private async signAttestation(
+    payloadHash: Hex,
+    payloadLength: number,
+    deadline: bigint,
+  ): Promise<Hex> {
+    const wallet = this.client.walletClient;
+    if (!wallet?.account) {
+      throw new Error('Publisher.signAttestation: wallet has no account');
+    }
+    // PAY_TO-class defense: refuse to sign against a placeholder DataStream
+    // address. Otherwise every attestation would revert
+    // InvalidAttestationSignature on the live r2 contract with no useful
+    // error trail.
+    const ds = (this.client.network.contracts.dataStream || '').toLowerCase();
+    if (!ds || ds === '0x0000000000000000000000000000000000000000') {
+      throw new Error(
+        'Publisher.signAttestation: network.contracts.dataStream is unset ' +
+          'or zero-address — refusing to sign with a placeholder.',
+      );
+    }
+    return wallet.signTypedData({
+      account: wallet.account,
+      domain: {
+        name: 'BYTE Library',
+        version: '1',
+        chainId: this.client.network.chainId,
+        verifyingContract: this.client.network.contracts.dataStream,
+      },
+      types: PAYLOAD_ATTESTATION_TYPES,
+      primaryType: 'PayloadAttestation',
+      message: {
+        publisher: wallet.account.address,
+        payloadHash,
+        payloadLength: BigInt(payloadLength),
+        deadline,
+      },
+    });
+  }
+
+  /**
+   * Publish data to a specific subscriber (r2: signs PayloadAttestation).
+   * No per-publish USDC approve is needed on the publisher side: in the r2
+   * direct-allowance model the SUBSCRIBER approved DataStream at subscribe time,
+   * and streamData transferFrom-pulls the per-message fee straight from the
+   * subscriber (publisher take + dev fund). If the subscriber's allowance is
+   * insufficient, the on-chain transferFrom reverts.
    */
   async publish(
     subscriber: `0x${string}`,
     data: any,
     maxFee: bigint = 0n
   ): Promise<TxResult> {
-    const payload = JSON.stringify(data);
-    const payloadBytes = new TextEncoder().encode(payload);
-    const payloadHash = keccak256(toBytes(payload));
-
-    // Approve USDC for publishing fee
-    // (In production, do this once with max approval)
+    // Canonical-JSON hash: identical bytes to the verify side and to the Python
+    // SDK (recursively key-sorted, no whitespace). See canonical.ts.
+    const payloadBytes = canonicalBytes(data);
+    const payloadHash = keccak256(toHex(payloadBytes));
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + ATTESTATION_TTL_S);
+    const signature = await this.signAttestation(payloadHash, payloadBytes.length, deadline);
 
     const tx = await this.client.dataStream.write.streamData([
       subscriber,
       payloadHash,
-      payloadBytes.length,
+      BigInt(payloadBytes.length),
       maxFee,
+      { deadline, signature },
     ]);
 
     const receipt = await this.client.publicClient.waitForTransactionReceipt({ hash: tx });
@@ -94,22 +162,25 @@ export class Publisher {
   }
 
   /**
-   * Broadcast data to multiple subscribers.
+   * Broadcast data to multiple subscribers (r2: signs PayloadAttestation).
    */
   async broadcast(
     subscribers: `0x${string}`[],
     data: any,
     maxFeePerSub: bigint = 0n
   ): Promise<TxResult> {
-    const payload = JSON.stringify(data);
-    const payloadBytes = new TextEncoder().encode(payload);
-    const payloadHash = keccak256(toBytes(payload));
+    // Canonical-JSON hash — same helper as publish() and the verify side.
+    const payloadBytes = canonicalBytes(data);
+    const payloadHash = keccak256(toHex(payloadBytes));
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + ATTESTATION_TTL_S);
+    const signature = await this.signAttestation(payloadHash, payloadBytes.length, deadline);
 
     const tx = await this.client.dataStream.write.streamBroadcast([
       subscribers,
       payloadHash,
-      payloadBytes.length,
+      BigInt(payloadBytes.length),
       maxFeePerSub,
+      { deadline, signature },
     ]);
 
     const receipt = await this.client.publicClient.waitForTransactionReceipt({ hash: tx });
@@ -131,28 +202,12 @@ export class Publisher {
     return {
       address: addr,
       status: STATUS_MAP[Number(raw.status)] || 'NONE',
-      tier: TIER_MAP[Number(raw.tier)] || 'NEW',
-      takeRate: Number(await this.client.dataRegistry.read.getPublisherTakeRate([addr])) / 100,
-      stake: raw.stake,
       subscriberCount: Number(raw.subscriberCount),
       messageCount: Number(raw.messageCount),
       totalRevenue: raw.totalRevenue,
       lastActive: Number(raw.lastActiveTimestamp),
       registeredAt: Number(raw.registeredAt),
     };
-  }
-
-  /**
-   * Get full publisher stats including PQS.
-   */
-  async getStats(address?: `0x${string}`): Promise<PublisherStats> {
-    const addr = address || this.client.account!;
-    const [info, schema, pqs] = await Promise.all([
-      this.getInfo(addr),
-      this.getSchema(addr),
-      this.getPQS(addr),
-    ]);
-    return { info, schema, pqs };
   }
 
   async getSchema(address?: `0x${string}`): Promise<Schema> {
@@ -170,26 +225,16 @@ export class Publisher {
     };
   }
 
-  async getPQS(address?: `0x${string}`): Promise<PQSScore> {
-    const addr = address || this.client.account!;
-    const raw: any = await this.client.pqsVerifier.read.getVerifiedPQS([addr]);
-    return {
-      disputeScore: Number(raw.disputeScore),
-      retentionScore: Number(raw.retentionScore),
-      freshnessScore: Number(raw.freshnessScore),
-      revenueQuality: Number(raw.revenueQuality),
-      composite: Number(raw.composite),
-      timestamp: Number(raw.timestamp),
-    };
-  }
-
   /**
-   * Estimate fee for a given payload size.
+   * Estimate the subscriber fee for a given payload size. r2 DataStreamLib.
+   * estimateFee returns a SINGLE subscriberFee — the v0.5/v0.6 per-message
+   * publishing fee is removed in BYTE Library r2 (first-party: it would be
+   * BYTEDev paying BYTEDev), so there is no second return value.
    */
-  async estimateFee(payloadLength: number): Promise<{ subscriberFee: bigint; publishingFee: bigint }> {
+  async estimateFee(payloadLength: number): Promise<{ subscriberFee: bigint }> {
     const addr = this.client.account!;
-    const [subFee, pubFee] = await this.client.dataStream.read.estimateFee([addr, payloadLength]) as [bigint, bigint];
-    return { subscriberFee: subFee, publishingFee: pubFee };
+    const subscriberFee = await this.client.dataStream.read.estimateFee([addr, payloadLength]) as bigint;
+    return { subscriberFee };
   }
 
   /**

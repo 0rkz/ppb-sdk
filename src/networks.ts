@@ -4,16 +4,12 @@ export const LOCAL_ANVIL: NetworkConfig = {
   chainId: 31337,
   rpcUrl: 'http://localhost:8545',
   contracts: {
-    ppbToken: '0x0000000000000000000000000000000000000000',
     dataRegistry: '0x0000000000000000000000000000000000000000',
     schemaRegistry: '0x0000000000000000000000000000000000000000',
     dataStream: '0x0000000000000000000000000000000000000000',
-    streamSubscription: '0x0000000000000000000000000000000000000000',
-    reputationEngine: '0x0000000000000000000000000000000000000000',
-    dividendPool: '0x0000000000000000000000000000000000000000',
-    burnEngine: '0x0000000000000000000000000000000000000000',
-    relayRegistry: '0x0000000000000000000000000000000000000000',
-    pqsVerifier: '0x0000000000000000000000000000000000000000',
+    // TODO(deploy): set to the local MockUSDC3009 address printed by the
+    // `DeployByteLibrary` forge script when running against a local Anvil node.
+    usdc: '0x0000000000000000000000000000000000000000',
   },
   indexerUrl: 'http://localhost:8080',
 };
@@ -22,18 +18,18 @@ export const ARBITRUM_SEPOLIA: NetworkConfig = {
   chainId: 421614,
   rpcUrl: 'https://sepolia-rollup.arbitrum.io/rpc',
   contracts: {
-    ppbToken: '0x37a86eD3ee87109ff8cF96B3fe45c70a2ebB69f3',
-    dataRegistry: '0x05D89769A066549115b1B4408bFf899D2737F30b',
-    schemaRegistry: '0x2e490F33180F3d387d46c213ADf776135c052acf',
-    dataStream: '0x7E12bF2B0d43B9Ea0Bc37A06EcAC36b810351F35',
-    streamSubscription: '0xcd3521E655ED4070BD95740cf610E955965B575d',
-    reputationEngine: '0x3b842Aac0b932D546ed6C87895350EaeF0bEbcc3',
-    dividendPool: '0xd0977A118Fec0fEb5F48F0D713f509cB2032688b',
-    burnEngine: '0xFDD2aD56042156da2E09451A91BB8637be6cfA22',
-    relayRegistry: '0xFADfB804F76A4FBcB44ACf72519A403A9ff02618',
-    pqsVerifier: '0x67F97fc5E45889d3BFf7dcBA114Ca210f1896b0d',
-    validatorRegistry: '0xEd0Ffa5201994cAC3e17566f445C5D0d0103F016',
-    testnetFaucet: '0x19d25F286b8Dca21886bCBe9c21334C6F0C532FB',
+    // BYTE Library r2 (no-token, direct-allowance settlement). Cited:
+    // contracts/deployments/arbitrum-sepolia.json "byte-library" block — the
+    // r2 DataStreamLib redeploy (2026-05-24) supersedes the dead v0.5 token-era
+    // DataStream/DataRegistry/StreamSubscription stack.
+    dataRegistry: '0x086990937Cf931e36E01487CD63407f281f1Fc6A',
+    schemaRegistry: '0x4102BA342A3e9f495bD553D99D1590470C32EE88',
+    dataStream: '0x44729bB148F46d8Db509E47b0453edc271e06e95',
+    // Settlement USDC = the production MockUSDC3009 the byte-library contracts
+    // were deployed against. Cited: contracts/deployments/arbitrum-sepolia.json
+    // ("byte-library".USDC == "0x1c16659…", the same token DataStreamLib was
+    // constructed with) and x402-gateway/src/lib/config.ts (usdcAddress default).
+    usdc: '0x1c16659aeb3aE28467E90348fAAB8874a0D3A4d3',
   },
   indexerUrl: 'http://localhost:8080',
 };
@@ -42,16 +38,15 @@ export const ARBITRUM_ONE: NetworkConfig = {
   chainId: 42161,
   rpcUrl: 'https://arb1.arbitrum.io/rpc',
   contracts: {
-    ppbToken: '0x0000000000000000000000000000000000000000',
     dataRegistry: '0x0000000000000000000000000000000000000000',
     schemaRegistry: '0x0000000000000000000000000000000000000000',
     dataStream: '0x0000000000000000000000000000000000000000',
-    streamSubscription: '0x0000000000000000000000000000000000000000',
-    reputationEngine: '0x0000000000000000000000000000000000000000',
-    dividendPool: '0x0000000000000000000000000000000000000000',
-    burnEngine: '0x0000000000000000000000000000000000000000',
-    relayRegistry: '0x0000000000000000000000000000000000000000',
-    pqsVerifier: '0x0000000000000000000000000000000000000000',
+    // Circle-published native USDC on Arbitrum One. Cited: Circle's official
+    // address (also used in data-feeds/stablecoin-rails/feed.py). TODO(confirm):
+    // the BYTE Library core is not yet deployed to Arbitrum One (mainnet is
+    // audit-gated). Confirm the settlement token at mainnet deploy time before
+    // relying on this — the contracts must be constructed with this exact USDC.
+    usdc: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
   },
   indexerUrl: '',
 };

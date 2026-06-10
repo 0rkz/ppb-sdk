@@ -1,49 +1,432 @@
-
-╭----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------╮
-| Type     | Signature                                                                                                                                               | Selector                                                           |
-+=========================================================================================================================================================================================================================================+
-| event    | SchemaDeactivated(address)                                                                                                                              | 0xe0bd810e86b778a22952fbb0ae12f08f9ae25ec2cd83706198d1a883c342c301 |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| event    | SchemaRegistered(address,bytes32,SchemaRegistry.PublisherClass,SchemaRegistry.VerificationType,uint256)                                                 | 0x861ee61c612e8ede0e92c434cb544294a2cb8b33e8d877d87ab80bfd7a7e202d |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| event    | SchemaUpdated(address,uint256)                                                                                                                          | 0x7b48374f95354cc3653fa6ecf42c1490bc29714acd27d273b667a51b08efa3c8 |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| error    | InvalidFrequency()                                                                                                                                      | 0xe3c2448f                                                         |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| error    | InvalidMaxSize()                                                                                                                                        | 0xe7d507dc                                                         |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| error    | InvalidPrice()                                                                                                                                          | 0x00bfc921                                                         |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| error    | MethodologyHashTaken()                                                                                                                                  | 0x929c76d4                                                         |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| error    | NotSchemaOwner()                                                                                                                                        | 0x430106d3                                                         |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| error    | PayloadExceedsMaxSize()                                                                                                                                 | 0x8a1007cd                                                         |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| error    | SchemaAlreadyExists()                                                                                                                                   | 0x73ef6194                                                         |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| error    | SchemaNotFound()                                                                                                                                        | 0xae0ca2dd                                                         |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| function | deactivateSchema() nonpayable                                                                                                                           | 0xeb6c6580                                                         |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| function | getPublisherClass(address) view returns (SchemaRegistry.PublisherClass)                                                                                 | 0xeed55e3e                                                         |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| function | getSchema(address) view returns (SchemaRegistry.Schema)                                                                                                 | 0x09976fda                                                         |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| function | getVerificationType(address) view returns (SchemaRegistry.VerificationType)                                                                             | 0xb507a1e6                                                         |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| function | isActive(address) view returns (bool)                                                                                                                   | 0x9f8a13d7                                                         |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| function | methodologyOwner(bytes32) view returns (address)                                                                                                        | 0x1b3fabc9                                                         |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| function | registerSchema(uint32,uint32,uint32,SchemaRegistry.PublisherClass,SchemaRegistry.VerificationType,bytes32,bytes32,uint256) nonpayable                   | 0xf97c5068                                                         |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| function | schemaCount() view returns (uint256)                                                                                                                    | 0x00839e67                                                         |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| function | schemas(address) view returns (uint32,uint32,uint32,SchemaRegistry.PublisherClass,SchemaRegistry.VerificationType,bytes32,bytes32,uint256,bool,uint256) | 0x84f60692                                                         |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| function | updatePrice(uint256) nonpayable                                                                                                                         | 0x8d6cc56d                                                         |
-|----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-| function | validateAndCalculateFee(address,uint256) view returns (bool,uint256)                                                                                    | 0xf200e63c                                                         |
-╰----------+---------------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------╯
-
+[
+  {
+    "type": "function",
+    "name": "deactivateSchema",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "getPublisherClass",
+    "inputs": [
+      {
+        "name": "publisher",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "enum SchemaRegistry.PublisherClass"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getSchema",
+    "inputs": [
+      {
+        "name": "publisher",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct SchemaRegistry.Schema",
+        "components": [
+          {
+            "name": "expectedSize",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "maxSize",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "frequencySeconds",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "pubClass",
+            "type": "uint8",
+            "internalType": "enum SchemaRegistry.PublisherClass"
+          },
+          {
+            "name": "verType",
+            "type": "uint8",
+            "internalType": "enum SchemaRegistry.VerificationType"
+          },
+          {
+            "name": "methodologyHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "topic",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "pricePerKB",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "active",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "registeredAt",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getVerificationType",
+    "inputs": [
+      {
+        "name": "publisher",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "enum SchemaRegistry.VerificationType"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "isActive",
+    "inputs": [
+      {
+        "name": "publisher",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "methodologyOwner",
+    "inputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "registerSchema",
+    "inputs": [
+      {
+        "name": "expectedSize",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "maxSize",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "frequencySeconds",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "pubClass",
+        "type": "uint8",
+        "internalType": "enum SchemaRegistry.PublisherClass"
+      },
+      {
+        "name": "verType",
+        "type": "uint8",
+        "internalType": "enum SchemaRegistry.VerificationType"
+      },
+      {
+        "name": "methodologyHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "topic",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "pricePerKB",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "schemaCount",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "schemas",
+    "inputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "expectedSize",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "maxSize",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "frequencySeconds",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "pubClass",
+        "type": "uint8",
+        "internalType": "enum SchemaRegistry.PublisherClass"
+      },
+      {
+        "name": "verType",
+        "type": "uint8",
+        "internalType": "enum SchemaRegistry.VerificationType"
+      },
+      {
+        "name": "methodologyHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "topic",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "pricePerKB",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "active",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "registeredAt",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "updatePrice",
+    "inputs": [
+      {
+        "name": "newPricePerKB",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "validateAndCalculateFee",
+    "inputs": [
+      {
+        "name": "publisher",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "payloadSize",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "valid",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "fee",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "event",
+    "name": "SchemaDeactivated",
+    "inputs": [
+      {
+        "name": "publisher",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "SchemaRegistered",
+    "inputs": [
+      {
+        "name": "publisher",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "topic",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "pubClass",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "enum SchemaRegistry.PublisherClass"
+      },
+      {
+        "name": "verType",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "enum SchemaRegistry.VerificationType"
+      },
+      {
+        "name": "pricePerKB",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "SchemaUpdated",
+    "inputs": [
+      {
+        "name": "publisher",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "pricePerKB",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "InvalidFrequency",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidMaxSize",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidPrice",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "MethodologyHashTaken",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotSchemaOwner",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PayloadExceedsMaxSize",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SchemaAlreadyExists",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SchemaNotFound",
+    "inputs": []
+  }
+]

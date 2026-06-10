@@ -14,9 +14,6 @@ export interface Schema {
 export interface PublisherInfo {
   address: `0x${string}`;
   status: 'NONE' | 'SANDBOX' | 'ACTIVE' | 'SUSPENDED' | 'BANNED';
-  tier: 'NEW' | 'ESTABLISHED' | 'TRUSTED' | 'PREMIUM' | 'ELITE';
-  takeRate: number;
-  stake: bigint;
   subscriberCount: number;
   messageCount: number;
   totalRevenue: bigint;
@@ -24,22 +21,25 @@ export interface PublisherInfo {
   registeredAt: number;
 }
 
-export interface PublisherStats {
-  info: PublisherInfo;
-  schema: Schema;
-  pqs: PQSScore;
-}
-
 // ─── Subscriber Types ────────────────────────────────────
 
+/**
+ * r2 direct-allowance subscription status. There is no escrow contract and no
+ * budget/duration: a subscription is the AND of two independent on-chain facts —
+ *   - `subscribed`: the social registry flag DataRegistryLib.isSubscribed(
+ *     subscriber, publisher) (set by dataRegistry.subscribe(publisher));
+ *   - `allowance`: the USDC allowance the subscriber granted to DataStreamLib
+ *     (usdc.allowance(subscriber, dataStream)), the cap the publisher's
+ *     streamData/streamBroadcast transferFrom-pulls the per-message fee from.
+ *
+ * `active` is true only when the subscriber is registered AND has a non-zero
+ * allowance to the stream contract — otherwise settlement would revert / skip.
+ */
 export interface Subscription {
   active: boolean;
-  budget: bigint;
-  spent: bigint;
-  maxFeePerMessage: bigint;
-  startTime: number;
-  duration: number;
-  remaining: bigint;
+  subscribed: boolean;
+  /** Remaining USDC allowance granted to DataStreamLib (6-decimal atomic). */
+  allowance: bigint;
 }
 
 export interface StreamMessage {
@@ -49,29 +49,20 @@ export interface StreamMessage {
   payloadLength: number;
   fee: bigint;
   timestamp: number;
-}
-
-export type FlagType = 'FACTUAL' | 'BLOAT' | 'QUALITY' | 'FABRICATION';
-
-// ─── PQS Types ───────────────────────────────────────────
-
-export interface PQSScore {
-  disputeScore: number;
-  retentionScore: number;
-  freshnessScore: number;
-  revenueQuality: number;
-  composite: number;
-  timestamp: number;
+  // r2: present on BYTE Library r2 events, undefined on legacy pre-r2.
+  // Pass the StreamMessage to verifyEventPayload(msg, bytes) — it no-ops
+  // automatically when these are absent.
+  attestationDeadline?: bigint;
+  attestation?: `0x${string}`;
 }
 
 // ─── Mercat Types ────────────────────────────────────────
 
 export interface SearchParams {
   topic?: string;
-  minPQS?: number;
   maxPricePerKB?: bigint;
   publisherClass?: 'MACHINE' | 'HUMAN';
-  sortBy?: 'pqs' | 'price' | 'subscribers' | 'revenue';
+  sortBy?: 'price' | 'subscribers' | 'revenue';
   limit?: number;
   offset?: number;
 }
@@ -80,7 +71,6 @@ export interface PublisherListing {
   address: `0x${string}`;
   topic: string;
   tier: string;
-  pqs: number;
   pricePerKB: bigint;
   subscribers: number;
   messageCount: number;
