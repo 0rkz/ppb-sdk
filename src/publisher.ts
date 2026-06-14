@@ -1,22 +1,10 @@
 import { keccak256, toBytes, toHex, encodePacked, type Hex } from 'viem';
 import { ByteClient, type ByteConfig } from './client';
 import { canonicalBytes } from './canonical';
+import { signAttestation } from './attestation';
 import type { Schema, PublisherInfo, TxResult } from './types';
 
 const ATTESTATION_TTL_S = 300; // 5-minute attestation freshness window.
-
-/**
- * EIP-712 PayloadAttestation type definition. Must match
- * DataStreamLib.PAYLOAD_ATTESTATION_TYPEHASH literally.
- */
-const PAYLOAD_ATTESTATION_TYPES = {
-  PayloadAttestation: [
-    { name: 'publisher', type: 'address' },
-    { name: 'payloadHash', type: 'bytes32' },
-    { name: 'payloadLength', type: 'uint256' },
-    { name: 'deadline', type: 'uint256' },
-  ],
-} as const;
 
 const STATUS_MAP = ['NONE', 'SANDBOX', 'ACTIVE', 'SUSPENDED', 'BANNED'] as const;
 const CLASS_MAP = { MACHINE: 0, HUMAN: 1 } as const;
@@ -84,6 +72,9 @@ export class Publisher {
    * contract. r2 (2026-05-23) — returns the 65-byte signature hex which the
    * contract verifies before settling. The struct is emitted in the
    * settlement event so subscribers can re-verify out-of-band.
+   *
+   * Thin wrapper over the hoisted standalone `signAttestation` (attestation.ts)
+   * — the Trust Kit primitive — so the sign path is one shared implementation.
    */
   private async signAttestation(
     payloadHash: Hex,
@@ -94,34 +85,20 @@ export class Publisher {
     if (!wallet?.account) {
       throw new Error('Publisher.signAttestation: wallet has no account');
     }
-    // PAY_TO-class defense: refuse to sign against a placeholder DataStream
-    // address. Otherwise every attestation would revert
-    // InvalidAttestationSignature on the live r2 contract with no useful
-    // error trail.
-    const ds = (this.client.network.contracts.dataStream || '').toLowerCase();
-    if (!ds || ds === '0x0000000000000000000000000000000000000000') {
-      throw new Error(
-        'Publisher.signAttestation: network.contracts.dataStream is unset ' +
-          'or zero-address — refusing to sign with a placeholder.',
-      );
-    }
-    return wallet.signTypedData({
-      account: wallet.account,
-      domain: {
-        name: 'BYTE Library',
-        version: '1',
-        chainId: this.client.network.chainId,
-        verifyingContract: this.client.network.contracts.dataStream,
-      },
-      types: PAYLOAD_ATTESTATION_TYPES,
-      primaryType: 'PayloadAttestation',
-      message: {
+    return signAttestation(
+      {
         publisher: wallet.account.address,
         payloadHash,
         payloadLength: BigInt(payloadLength),
         deadline,
       },
-    });
+      // viem WalletClient: signTypedData needs the bound account.
+      {
+        account: wallet.account,
+        signTypedData: (args: any) => wallet.signTypedData(args),
+      },
+      this.client.network,
+    );
   }
 
   /**

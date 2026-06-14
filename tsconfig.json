@@ -17,5 +17,5 @@
     "noEmitOnError": false
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "abis"]
+  "exclude": ["node_modules", "dist", "abis", "src/**/*.test.ts", "src/**/*.spec.ts"]
 }

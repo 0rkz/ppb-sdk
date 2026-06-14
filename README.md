@@ -84,6 +84,80 @@ await gw.fetchFeed("fact-oracle", {
 > time (`GatewayClient`). `fact-oracle` needs the subscriber registered with a
 > live DataStream allowance first.
 
+## Trust Kit — verify-before-act provenance
+
+The Trust Kit is the SDK's headline primitive: **sign**, **verify**, and read a
+publisher's **quality score** — so any agent can produce and *fully* verify a
+PayPerByte PayloadAttestation without us in the request path.
+
+The legacy `verifyPayload()` checks only the **hash** (`keccak256(bytes) == attestedHash`).
+The Trust Kit adds the missing **signer** leg: it recovers the EIP-712 attestation
+signer and confirms it is the publisher the catalog says it is. A single `Verdict`
+composes both legs.
+
+```typescript
+import {
+  signAttestation,
+  verifyAttestation,
+  verifyFromEvent,
+  verifyFromGatewayResponse,
+  getPQS,
+  ARBITRUM_SEPOLIA,
+} from "@payperbyte/sdk";
+
+// 1) verify — hash AND signer recovery, before acting on any bytes.
+const verdict = await verifyAttestation({
+  payloadBytes: receivedBytes,        // the bytes you're about to act on
+  attestation: event.attestation,     // 65-byte sig (on-chain event OR gateway header)
+  expectedPublisher: publisherAddr,   // who the catalog/registry says the publisher is
+  payloadHash: event.payloadHash,
+  payloadLength: event.payloadLength,
+  deadline: event.attestationDeadline,
+  net: ARBITRUM_SEPOLIA,
+});
+// Verdict: { verified, hashMatch, signerMatch, recovered, expired, reason }
+if (!verdict.verified) refuse(verdict.reason);
+
+// Wrappers for the two on-the-wire anchors (same EIP-712 domain):
+await verifyFromEvent(event, receivedBytes, ARBITRUM_SEPOLIA);                  // on-chain
+await verifyFromGatewayResponse(body, xByteAttestationHeader, ARBITRUM_SEPOLIA, // gateway
+  knownGatewayAttester);
+
+// 2) sign — produce an attestation (any viem WalletClient/Account).
+const sig = await signAttestation(
+  { publisher: account.address, payloadHash, payloadLength, deadline },
+  account,
+  ARBITRUM_SEPOLIA,
+);
+
+// 3) getPQS — read the indexer delivery-quality composite (BPS 0-10000).
+const pqs = await getPQS(publisherAddr, ARBITRUM_SEPOLIA.indexerUrl);
+// { composite, dispute, retention, freshness, revenueQuality, asOf }
+// composite === null → publisher not yet scored.
+```
+
+**Verdict rules (these are the contract):**
+
+| Case | `hashMatch` | `signerMatch` | `verified` |
+|------|-------------|---------------|------------|
+| Known-good | `true` | `true` | `true` |
+| Tampered bytes | `false` | — | `false` |
+| Wrong/forged signer | `true` | `false` | `false` |
+| Empty/missing attestation | (computed) | `null` | `false` — **fail-closed** |
+
+- **Fail-closed on a missing attestation**: a present-but-empty (`"0x"`) or `null`
+  attestation yields `signerMatch=null` and `verified=false`. We never "pass on the
+  hash alone" — provenance is unproven without the publisher's signature.
+- **Expired is advisory, not fatal**: a once-minted `now+300s` deadline elapses on
+  every aged feed. `verifyAttestation` sets `expired=true` but does **not** fail
+  `verified` on the immutable on-chain anchor — staleness belongs to a freshness
+  axis, not the provenance verdict. The caller decides policy.
+- **PQS is a reputation signal, not the gate.** The payment-gating verify-before-act
+  check is the hash + signer recovery above; `getPQS` is off-chain, advisory, and may
+  be absent.
+- The `BYTE Library` EIP-712 domain literal is **consensus-critical** and identical
+  across the on-chain contract, gateway, MCP, and SDK. It is never renamed.
+
 ## Features
 
 - **Feed discovery** — browse and search first-party data feed publishers
@@ -116,7 +190,8 @@ Contract addresses are resolved per-network by the SDK (`ARBITRUM_SEPOLIA`, `LOC
 - `ByteClient` — low-level client holding the viem clients and contract instances (used by `Publisher`/`Subscriber`)
 - `Publisher` — register a feed, publish data, sign EIP-712 PayloadAttestations
 - `Subscriber` — subscribe, receive payloads, stream events
-- `verifyPayload` / `verifyEventPayload` / `fetchAndVerify` — subscriber-side payload verification against on-chain attestations
+- `verifyPayload` / `verifyEventPayload` / `fetchAndVerify` — subscriber-side **hash-only** payload verification against on-chain attestations
+- **Trust Kit** — `signAttestation`, `verifyAttestation` / `verify` (hash **and** signer recovery), `verifyFromEvent`, `verifyFromGatewayResponse`, `getPQS`
 - `Mercat` — feed search and discovery (connects to the indexer API)
 - `GatewayClient` — keyless x402 pay-per-call client (a wallet signs, not an API key); `discover`, `discoverResources`, `fetchFeed`
 
