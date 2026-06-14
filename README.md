@@ -84,14 +84,14 @@ await gw.fetchFeed("fact-oracle", {
 > time (`GatewayClient`). `fact-oracle` needs the subscriber registered with a
 > live DataStream allowance first.
 
-## Trust Kit — verify-before-act provenance
+## Foreseal Kit — verify-before-act provenance
 
-The Trust Kit is the SDK's headline primitive: **sign**, **verify**, and read a
+The Foreseal Kit is the SDK's headline primitive: **sign**, **verify**, and read a
 publisher's **quality score** — so any agent can produce and *fully* verify a
 PayPerByte PayloadAttestation without us in the request path.
 
 The legacy `verifyPayload()` checks only the **hash** (`keccak256(bytes) == attestedHash`).
-The Trust Kit adds the missing **signer** leg: it recovers the EIP-712 attestation
+The Foreseal Kit adds the missing **signer** leg: it recovers the EIP-712 attestation
 signer and confirms it is the publisher the catalog says it is. A single `Verdict`
 composes both legs.
 
@@ -191,7 +191,7 @@ Contract addresses are resolved per-network by the SDK (`ARBITRUM_SEPOLIA`, `LOC
 - `Publisher` — register a feed, publish data, sign EIP-712 PayloadAttestations
 - `Subscriber` — subscribe, receive payloads, stream events
 - `verifyPayload` / `verifyEventPayload` / `fetchAndVerify` — subscriber-side **hash-only** payload verification against on-chain attestations
-- **Trust Kit** — `signAttestation`, `verifyAttestation` / `verify` (hash **and** signer recovery), `verifyFromEvent`, `verifyFromGatewayResponse`, `getPQS`
+- **Foreseal Kit** — `signAttestation`, `verifyAttestation` / `verify` (hash **and** signer recovery), `verifyFromEvent`, `verifyFromGatewayResponse`, `getPQS`
 - `Mercat` — feed search and discovery (connects to the indexer API)
 - `GatewayClient` — keyless x402 pay-per-call client (a wallet signs, not an API key); `discover`, `discoverResources`, `fetchFeed`
 
