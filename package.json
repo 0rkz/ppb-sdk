@@ -1,11 +1,14 @@
 {
   "name": "@payperbyte/sdk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "commonjs",
   "description": "PayPerByte TypeScript SDK for the BYTE Library — verified, provenance-first data for AI agents. No token; direct-allowance USDC settlement on Arbitrum.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "abis"],
+  "files": [
+    "dist",
+    "abis"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
@@ -20,14 +23,26 @@
     "@x402/evm": "^2.13.0"
   },
   "peerDependenciesMeta": {
-    "@x402/core": { "optional": true },
-    "@x402/evm": { "optional": true }
+    "@x402/core": {
+      "optional": true
+    },
+    "@x402/evm": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "typescript": "^5.5.0",
     "@types/node": "^20.14.0",
     "vitest": "^2.0.0"
   },
-  "keywords": ["byte", "ai-agents", "verified-data", "provenance", "x402", "usdc", "arbitrum"],
+  "keywords": [
+    "byte",
+    "ai-agents",
+    "verified-data",
+    "provenance",
+    "x402",
+    "usdc",
+    "arbitrum"
+  ],
   "license": "MIT"
 }
