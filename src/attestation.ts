@@ -217,10 +217,20 @@ export async function verifyAttestation(
     args.nowSeconds ?? BigInt(Math.floor(Date.now() / 1000));
   const expired = args.deadline < now;
 
-  // ── HASH leg ──
-  const recomputed = keccak256(toBytesHex(args.payloadBytes)).toLowerCase() as Hex;
-  const expectedHash = normalizeHash(args.payloadHash);
-  const hashMatch = recomputed === expectedHash;
+  // ── HASH leg (throw-free) ──
+  // A malformed payloadHash (non-string from untrusted transport — number,
+  // object) or malformed payloadBytes must NOT throw: normalizeHash/toBytesHex
+  // run BEFORE the signer-leg try/catch, so any throw here would escape the
+  // documented "throws nothing; returns a Verdict" contract. Treat any failure
+  // as hashMatch=false (fail-closed).
+  let hashMatch = false;
+  try {
+    const recomputed = keccak256(toBytesHex(args.payloadBytes)).toLowerCase() as Hex;
+    const expectedHash = normalizeHash(args.payloadHash);
+    hashMatch = recomputed === expectedHash;
+  } catch {
+    hashMatch = false;
+  }
 
   // ── Empty / missing attestation → FAIL-CLOSED (do not pass on hash alone) ──
   if (!hasAttestation(args.attestation)) {
@@ -319,22 +329,39 @@ export interface AttestedEvent {
 /**
  * Verify a payload against an on-chain settlement event. The publisher named in
  * the event IS the expected signer (the event is authoritative for who attested).
+ *
+ * Malformed numeric fields (fractional/missing payloadLength or deadline, or a
+ * missing payloadHash) on untrusted transport input route through the
+ * fail-closed path instead of throwing — the documented "throws nothing; returns
+ * a Verdict" contract holds even on garbage input.
  */
-export function verifyFromEvent(
+export async function verifyFromEvent(
   event: AttestedEvent,
   payloadBytes: Uint8Array | Hex | string,
   net: NetworkConfig,
   nowSeconds?: bigint,
 ): Promise<Verdict> {
-  const deadline =
-    event.attestationDeadline ?? event.deadline ?? 0n;
+  const rawDeadline = event.attestationDeadline ?? event.deadline ?? 0n;
+  const payloadLength = toBigIntOr(event.payloadLength);
+  const deadline = toBigIntOr(rawDeadline);
+  if (
+    typeof event.payloadHash !== 'string' ||
+    payloadLength === null ||
+    deadline === null
+  ) {
+    return failClosedVerdict(
+      payloadBytes,
+      typeof event.payloadHash === 'string' ? event.payloadHash : undefined,
+      'malformed on-chain anchor (payloadHash/payloadLength/deadline not well-formed) — fail-closed',
+    );
+  }
   return verifyAttestation({
     payloadBytes,
     attestation: event.attestation ?? null,
     expectedPublisher: event.publisher,
     payloadHash: event.payloadHash,
-    payloadLength: BigInt(event.payloadLength),
-    deadline: BigInt(deadline),
+    payloadLength,
+    deadline,
     net,
     nowSeconds,
   });
@@ -360,16 +387,27 @@ export interface GatewayByteAttestation {
  * Verify a gateway response: parse the `X-BYTE-Attestation` header, then verify
  * the body bytes hash + recover the gateway attester. The gateway publishes the
  * attester address out-of-band (agent card / well-known); pass it as
- * `expectedAttester` so a forged header can't self-certify. If omitted, the
- * header's own `publisher` is trusted (signer-match degrades to "internally
- * consistent" — only the hash leg is adversarially meaningful, so prefer
- * passing the known attester).
+ * `expectedAttester` so a forged header can't self-certify.
+ *
+ * FAIL-CLOSED on a self-asserted header: the header's `publisher` field is
+ * attacker-controlled over an untrusted transport, so a forged body+header could
+ * otherwise self-certify (sign with key X, claim publisher X). If
+ * `expectedAttester` is omitted we therefore return `verified=false` /
+ * `signerMatch=null` — provenance is unproven without a pinned attester. Pass the
+ * known gateway attester to get a meaningful signer leg. (Mirrors the
+ * missing-header rule.)
+ *
+ * Malformed/incomplete header fields (missing signature/payloadHash, or a
+ * fractional/missing payloadLength/deadline) also route fail-closed rather than
+ * throwing — the "throws nothing; returns a Verdict" contract holds on garbage.
  *
  * @param responseBody  the EXACT bytes the gateway returned (string or bytes).
  * @param attestationHeader  the raw `X-BYTE-Attestation` header value (JSON), or
  *                           the already-parsed object, or null if absent.
+ * @param expectedAttester  the gateway attester address (out-of-band). REQUIRED
+ *                          for a meaningful verdict; omitting it fails closed.
  */
-export function verifyFromGatewayResponse(
+export async function verifyFromGatewayResponse(
   responseBody: Uint8Array | Hex | string,
   attestationHeader: string | GatewayByteAttestation | null,
   net: NetworkConfig,
@@ -384,25 +422,49 @@ export function verifyFromGatewayResponse(
         : attestationHeader;
   }
   if (!att) {
-    // Missing / unparseable header → fail-closed via the empty-attestation rule.
-    return verifyAttestation({
-      payloadBytes: responseBody,
-      attestation: null,
-      expectedPublisher: expectedAttester ?? (ZERO_ADDRESS as Hex),
-      payloadHash: keccak256(toBytesHex(responseBody)),
-      payloadLength: byteLengthOf(responseBody),
-      deadline: 0n,
-      net,
-      nowSeconds,
-    });
+    // Missing / unparseable header → fail-closed.
+    return failClosedVerdict(
+      responseBody,
+      undefined,
+      'no X-BYTE-Attestation header (missing or unparseable) — provenance unproven; fail-closed',
+    );
+  }
+  // HIGH-FIX: a self-asserted header cannot prove provenance. Without a pinned
+  // expectedAttester, trusting `att.publisher` would let a forged response
+  // self-certify. Fail closed.
+  if (!expectedAttester) {
+    return failClosedVerdict(
+      responseBody,
+      typeof att.payloadHash === 'string' ? att.payloadHash : undefined,
+      'no expectedAttester pinned — a self-asserted X-BYTE-Attestation header ' +
+        '(its `publisher` field is attacker-controlled) cannot prove provenance; ' +
+        'pass the gateway attester address. Fail-closed.',
+    );
+  }
+  // HIGH-FIX: coerce numeric fields defensively — BigInt() throws on
+  // fractional/undefined values fed over an untrusted transport.
+  const payloadLength = toBigIntOr(att.payloadLength);
+  const deadline = toBigIntOr(att.deadline);
+  if (
+    typeof att.payloadHash !== 'string' ||
+    !hasAttestation(att.signature ?? null) ||
+    payloadLength === null ||
+    deadline === null
+  ) {
+    return failClosedVerdict(
+      responseBody,
+      typeof att.payloadHash === 'string' ? att.payloadHash : undefined,
+      'malformed or incomplete attestation header ' +
+        '(signature/payloadHash/payloadLength/deadline not well-formed) — fail-closed',
+    );
   }
   return verifyAttestation({
     payloadBytes: responseBody,
-    attestation: att.signature ?? null,
-    expectedPublisher: expectedAttester ?? att.publisher,
+    attestation: att.signature as Hex,
+    expectedPublisher: expectedAttester,
     payloadHash: att.payloadHash,
-    payloadLength: BigInt(att.payloadLength),
-    deadline: BigInt(att.deadline),
+    payloadLength,
+    deadline,
     net,
     nowSeconds,
   });
@@ -416,11 +478,56 @@ function safeParseAttestation(raw: string): GatewayByteAttestation | null {
   }
 }
 
-function byteLengthOf(payloadBytes: Uint8Array | Hex | string): bigint {
-  if (typeof payloadBytes === 'string') {
-    return payloadBytes.startsWith('0x')
-      ? BigInt((payloadBytes.length - 2) / 2)
-      : BigInt(new TextEncoder().encode(payloadBytes).length);
+/**
+ * Coerce an attested numeric field (payloadLength / deadline) to a non-negative
+ * bigint, or null if it is missing / fractional / NaN / negative. A null routes
+ * the caller into the fail-closed path rather than throwing — `BigInt(1.5)` and
+ * `BigInt(undefined)` both throw, and these fields arrive over an untrusted
+ * transport (gateway header / MITM-able channel / on-chain decode).
+ */
+function toBigIntOr(
+  value: bigint | number | string | null | undefined,
+): bigint | null {
+  if (value === null || value === undefined) return null;
+  try {
+    if (typeof value === 'bigint') return value < 0n ? null : value;
+    if (typeof value === 'number') {
+      return Number.isInteger(value) && value >= 0 ? BigInt(value) : null;
+    }
+    // string: BigInt('') === 0n and BigInt('1.5') throws — require clean digits.
+    const s = value.trim();
+    return /^\d+$/.test(s) ? BigInt(s) : null;
+  } catch {
+    return null;
   }
-  return BigInt(payloadBytes.length);
+}
+
+/**
+ * A fail-closed Verdict that still reports an honest hash leg over the body when
+ * an attested hash is available (so logs show whether the bytes matched even
+ * though provenance is unproven). `signerMatch` is null — there was nothing we
+ * could trust to recover against.
+ */
+function failClosedVerdict(
+  payloadBytes: Uint8Array | Hex | string,
+  attestedHash: Hex | string | undefined,
+  reason: string,
+): Verdict {
+  let hashMatch = false;
+  if (attestedHash != null) {
+    try {
+      const recomputed = keccak256(toBytesHex(payloadBytes)).toLowerCase();
+      hashMatch = recomputed === normalizeHash(attestedHash);
+    } catch {
+      hashMatch = false;
+    }
+  }
+  return {
+    verified: false,
+    hashMatch,
+    signerMatch: null,
+    recovered: null,
+    expired: false,
+    reason,
+  };
 }
