@@ -1,11 +1,11 @@
 # @payperbyte/sdk — PayPerByte TypeScript SDK
 
-TypeScript SDK for PayPerByte (the BYTE Library) — the verified, provenance-first data layer for AI agents. Discover first-party feeds, subscribe, stream payloads, and verify every payload against its on-chain EIP-712 attestation. No token; USDC settlement on Arbitrum.
+TypeScript SDK for PayPerByte (the BYTE Library) — the cryptographically attested, provenance-verifiable data layer for AI agents. Discover first-party feeds, subscribe, stream payloads, and verify every payload against its on-chain EIP-712 attestation (provenance + tamper-evidence — who signed these exact bytes — not a correctness guarantee). No token; USDC settlement on Arbitrum.
 
 ## Installation
 
 ```bash
-npm install github:0rkz/byte-sdk
+npm install @payperbyte/sdk
 ```
 
 ## Quick Start
