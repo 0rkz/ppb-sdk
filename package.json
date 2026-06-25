@@ -1,8 +1,8 @@
 {
   "name": "@payperbyte/sdk",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "type": "commonjs",
-  "description": "PayPerByte TypeScript SDK for the BYTE Library — verified, provenance-first data for AI agents. No token; direct-allowance USDC settlement on Arbitrum.",
+  "description": "PayPerByte TypeScript SDK for the BYTE Library — cryptographically attested, provenance-verifiable data for AI agents (proves who signed the exact bytes, not data correctness). No token; direct-allowance USDC settlement on Arbitrum.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
@@ -38,11 +38,20 @@
   "keywords": [
     "byte",
     "ai-agents",
-    "verified-data",
+    "attested-data",
     "provenance",
     "x402",
     "usdc",
     "arbitrum"
   ],
+  "homepage": "https://payperbyte.io",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0rkz/ppb-sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/0rkz/ppb-sdk/issues"
+  },
+  "author": "0rkz (https://github.com/0rkz)",
   "license": "MIT"
 }

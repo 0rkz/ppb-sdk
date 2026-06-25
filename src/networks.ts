@@ -31,7 +31,12 @@ export const ARBITRUM_SEPOLIA: NetworkConfig = {
     // constructed with) and x402-gateway/src/lib/config.ts (usdcAddress default).
     usdc: '0x1c16659aeb3aE28467E90348fAAB8874a0D3A4d3',
   },
-  indexerUrl: 'http://localhost:8080',
+  // Hosted PayPerByte indexer that indexes the Arbitrum-Sepolia BYTE Library
+  // deployment. Serves Mercat (`/publishers`, `/publisher/{addr}`, `/health`)
+  // AND getPQS (`/publisher/{addr}/pqs`). NOT api.payperbyte.io — that host does
+  // not serve the /pqs path (404). For a local indexer, override with the URL
+  // explicitly (the LOCAL_ANVIL config above keeps localhost:8080).
+  indexerUrl: 'https://feeds.payperbyte.io',
 };
 
 export const ARBITRUM_ONE: NetworkConfig = {
