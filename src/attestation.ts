@@ -232,6 +232,30 @@ export async function verifyAttestation(
     hashMatch = false;
   }
 
+  // ── DataStream config guard (mirrors signAttestation's) ──────────────────────
+  // The EIP-712 domain's verifyingContract IS net.contracts.dataStream. A zero/
+  // unset dataStream (e.g. ARBITRUM_ONE — no deployed core yet) makes EVERY
+  // recovery happen under a bogus domain, so every genuine receipt silently fails
+  // signerMatch and reads like a "forged" receipt. Fail closed with an EXPLICIT
+  // config reason so an integrator sees "wrong network config", not a false
+  // tamper/forgery signal. (signAttestation throws here; verify must not throw —
+  // it returns a fail-closed Verdict per its contract.)
+  const ds = (args.net?.contracts?.dataStream || '').toLowerCase();
+  if (!ds || ds === ZERO_ADDRESS) {
+    return {
+      verified: false,
+      hashMatch,
+      signerMatch: null,
+      recovered: null,
+      expired,
+      reason:
+        'network.contracts.dataStream is unset or zero-address — cannot verify ' +
+        'under a valid EIP-712 domain (this network has no deployed DataStream, ' +
+        'e.g. ARBITRUM_ONE). Verify against ARBITRUM_SEPOLIA (or a network with a ' +
+        'deployed DataStream). This is a CONFIG error, NOT a receipt failure.',
+    };
+  }
+
   // ── Empty / missing attestation → FAIL-CLOSED (do not pass on hash alone) ──
   if (!hasAttestation(args.attestation)) {
     return {

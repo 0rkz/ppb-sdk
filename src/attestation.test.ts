@@ -165,6 +165,30 @@ describe('planted faults', () => {
     expect(v.recovered).toBeNull();
   });
 
+  it('zero/unset dataStream (e.g. ARBITRUM_ONE) → fail-closed CONFIG verdict, not a signer-mismatch', async () => {
+    // A GENUINE receipt (signed on the real NET) must NOT read as forged when the
+    // caller verifies under a network whose dataStream is the zero-address — that
+    // is a config error (no deployed DataStream), and the guard must say so.
+    const s = await buildSigned();
+    const badNet = {
+      ...NET,
+      contracts: { ...NET.contracts, dataStream: '0x0000000000000000000000000000000000000000' as Hex },
+    };
+    const v = await verifyAttestation({
+      payloadBytes: s.bytes,
+      attestation: s.signature,
+      expectedPublisher: s.publisher,
+      payloadHash: s.payloadHash,
+      payloadLength: BigInt(s.bytes.length),
+      deadline: s.deadline,
+      net: badNet,
+    });
+    expect(v.verified).toBe(false);
+    expect(v.signerMatch).toBeNull(); // short-circuits BEFORE signer recovery
+    expect(v.reason).toMatch(/dataStream|CONFIG|deployed/i);
+    expect(v.hashMatch).toBe(true); // the hash leg still runs + is reported
+  });
+
   it('empty attestation ("0x", len<=2) → signerMatch=null, verified=false', async () => {
     const s = await buildSigned();
     const v = await verifyAttestation({
