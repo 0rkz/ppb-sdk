@@ -61,6 +61,28 @@ export function attestationDomain(net: NetworkConfig) {
   } as const;
 }
 
+/**
+ * True iff a PRESENT wire `domain` diverges from the canonical (consensus) one.
+ * Absent domain → false (the signer is still recovered under the net-pinned
+ * domain). Mirrors the gate's + demo's check so the SDK is as strict: a receipt
+ * that ASSERTS a forked domain is refused, not silently ignored.
+ */
+function receiptDomainDiverges(
+  domain:
+    | { name?: string; version?: string | number; chainId?: number | string; verifyingContract?: string }
+    | undefined,
+  canonical: { name: string; version: string; chainId: number; verifyingContract: string },
+): boolean {
+  if (!domain) return false;
+  return (
+    domain.name !== canonical.name ||
+    String(domain.version) !== String(canonical.version) ||
+    Number(domain.chainId) !== Number(canonical.chainId) ||
+    String(domain.verifyingContract).toLowerCase() !==
+      String(canonical.verifyingContract).toLowerCase()
+  );
+}
+
 /** The four fields the publisher signs over. */
 export interface PayloadAttestationStruct {
   publisher: Hex;
@@ -480,6 +502,25 @@ export async function verifyFromGatewayResponse(
       typeof att.payloadHash === 'string' ? att.payloadHash : undefined,
       'malformed or incomplete attestation header ' +
         '(signature/payloadHash/payloadLength/deadline not well-formed) — fail-closed',
+    );
+  }
+  // HIGH-FIX: a PRESENT wire `domain` that diverges from the consensus domain is a
+  // forked-domain signal — fail closed (as strict as the gate + the demo; the demo's
+  // scenario E). The signer is recovered under the net-pinned domain regardless, so a
+  // genuine receipt (wire domain == consensus, or absent) still verifies. Skipped when
+  // the net has no deployed DataStream (zero verifyingContract, e.g. ARBITRUM_ONE) so
+  // verifyAttestation's dataStream config guard owns that case with its clearer reason.
+  const canonical = attestationDomain(net);
+  if (
+    canonical.verifyingContract &&
+    canonical.verifyingContract.toLowerCase() !== ZERO_ADDRESS &&
+    receiptDomainDiverges(att.domain, canonical)
+  ) {
+    return failClosedVerdict(
+      responseBody,
+      typeof att.payloadHash === 'string' ? att.payloadHash : undefined,
+      'receipt domain diverges from the consensus BYTE Library domain — refusing to ' +
+        'verify under a forked domain (fail-closed)',
     );
   }
   return verifyAttestation({

@@ -15,7 +15,7 @@ import {
   ByteClient,
   Subscriber,
   Mercat,
-  verifyPayload,
+  verifyFromEvent,
   ARBITRUM_SEPOLIA,
 } from "@payperbyte/sdk";
 
@@ -38,10 +38,12 @@ const subscriber = new Subscriber({
 });
 await subscriber.subscribe(publishers[0].address, 10.0); // $10 allowance cap
 
-// Verify received bytes against the publisher's on-chain attested hash.
-// Signature: verifyPayload(payloadBytes, expectedHash).
-// Throws HashMismatchError if the bytes don't match what was attested.
-verifyPayload(receivedBytes, message.payloadHash);
+// Verify-before-act: recompute the hash AND recover the signer before trusting a
+// single byte. verifyFromEvent is the FULL check for an on-chain attestation; the
+// x402 gateway path uses verifyFromGatewayResponse (see Foreseal Kit below). The
+// hash-only verifyPayload() is the lower-level leg — prefer the full check.
+const verdict = await verifyFromEvent(message, receivedBytes, ARBITRUM_SEPOLIA);
+if (!verdict.verified) throw new Error(verdict.reason); // do not act on unverified bytes
 ```
 
 ## x402 keyless gateway (pay-per-call)
@@ -68,21 +70,20 @@ const gw = new GatewayClient({ signer: account, publicClient });
 const { feeds } = await gw.discover();
 
 // Pay-per-call a GET feed: unpaid → 402 → wallet signs USDC → retry → data.
-const { data, settlement, disclaimerCategory } = await gw.fetchFeed("crypto-top100");
+const { data, settlement, disclaimerCategory } = await gw.fetchFeed("defi-yields");
 console.log(settlement?.transaction); // on-chain settlement tx hash
 
-// POST oracle (fact-oracle): subscriber_address must ALREADY be a registered,
-// allowance-granting on-chain subscriber (a prior Subscriber.subscribe) — the
-// answer is broadcast on-chain and its fee is pulled from that allowance.
-await gw.fetchFeed("fact-oracle", {
-  body: { question: "…", subscriber_address: account.address },
+// POST oracle (address-reputation): a synchronous signed verdict — pass the query
+// body; the paid 200 returns { answer, attestation } you verify before acting.
+await gw.fetchFeed("address-reputation", {
+  body: { domain: "github.com", address: "0x1111111111111111111111111111111111111111" },
 });
 ```
 
 > Two distinct USDC flows: the on-chain direct-allowance `approve(dataStream)` at
 > subscribe time (`Subscriber`) is independent of the x402 EIP-3009 sign at fetch
-> time (`GatewayClient`). `fact-oracle` needs the subscriber registered with a
-> live DataStream allowance first.
+> time (`GatewayClient`). Pay-per-call via the gateway needs **no** prior
+> subscription — the wallet signature is the only credential.
 
 ## Foreseal Kit — verify-before-act provenance
 
@@ -98,30 +99,38 @@ composes both legs.
 ```typescript
 import {
   signAttestation,
-  verifyAttestation,
-  verifyFromEvent,
   verifyFromGatewayResponse,
+  verifyFromEvent,
+  verifyAttestation,
   getPQS,
   ARBITRUM_SEPOLIA,
 } from "@payperbyte/sdk";
 
-// 1) verify — hash AND signer recovery, before acting on any bytes.
-const verdict = await verifyAttestation({
-  payloadBytes: receivedBytes,        // the bytes you're about to act on
-  attestation: event.attestation,     // 65-byte sig (on-chain event OR gateway header)
-  expectedPublisher: publisherAddr,   // who the catalog/registry says the publisher is
+// 1) verifyFromGatewayResponse — the headline call for the x402 gateway path (what
+// most agents use). It is the FULL decision: recompute keccak256(body) AND recover
+// the EIP-712 signer under the net-pinned consensus domain, refuse a forked wire
+// domain, and assert the signer is the gateway attester you pinned out-of-band
+// (REQUIRED — a self-asserted header can't prove provenance; omitting it fails closed).
+const body   = await res.text();                       // the EXACT paid-200 bytes
+const header = res.headers.get("X-BYTE-Attestation");  // the raw receipt header
+const verdict = await verifyFromGatewayResponse(body, header, ARBITRUM_SEPOLIA, knownGatewayAttester);
+// Verdict: { verified, hashMatch, signerMatch, recovered, expired, reason }
+if (!verdict.verified) refuse(verdict.reason); // do NOT act on unverified bytes
+
+// On-chain anchor (subscriber/stream path), same EIP-712 domain:
+await verifyFromEvent(event, receivedBytes, ARBITRUM_SEPOLIA);
+
+// Lower-level: verifyAttestation takes the fields explicitly (the call the two
+// wrappers above compose). verifyPayload() is the hash-only leg — prefer the above.
+const v2 = await verifyAttestation({
+  payloadBytes: receivedBytes,
+  attestation: event.attestation,
+  expectedPublisher: publisherAddr,
   payloadHash: event.payloadHash,
   payloadLength: event.payloadLength,
   deadline: event.attestationDeadline,
   net: ARBITRUM_SEPOLIA,
 });
-// Verdict: { verified, hashMatch, signerMatch, recovered, expired, reason }
-if (!verdict.verified) refuse(verdict.reason);
-
-// Wrappers for the two on-the-wire anchors (same EIP-712 domain):
-await verifyFromEvent(event, receivedBytes, ARBITRUM_SEPOLIA);                  // on-chain
-await verifyFromGatewayResponse(body, xByteAttestationHeader, ARBITRUM_SEPOLIA, // gateway
-  knownGatewayAttester);
 
 // 2) sign — produce an attestation (any viem WalletClient/Account).
 const sig = await signAttestation(

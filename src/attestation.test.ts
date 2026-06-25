@@ -189,6 +189,28 @@ describe('planted faults', () => {
     expect(v.hashMatch).toBe(true); // the hash leg still runs + is reported
   });
 
+  it('verifyFromGatewayResponse: forked wire domain → verified=false (H3); genuine/absent pass', async () => {
+    const s = await buildSigned();
+    const consensus = attestationDomain(NET);
+    const mkHeader = (domain?: unknown) =>
+      JSON.stringify({
+        publisher: s.publisher,
+        payloadHash: s.payloadHash,
+        payloadLength: Number(s.bytes.length),
+        deadline: Number(s.deadline),
+        signature: s.signature,
+        ...(domain !== undefined ? { domain } : {}),
+      });
+    // genuine wire domain == consensus → verified
+    expect((await verifyFromGatewayResponse(s.bytes, mkHeader(consensus), NET, s.publisher)).verified).toBe(true);
+    // absent wire domain → still verified (recovery is under the net-pinned domain)
+    expect((await verifyFromGatewayResponse(s.bytes, mkHeader(undefined), NET, s.publisher)).verified).toBe(true);
+    // forked wire domain (chainId 1) with a real signature → REFUSE (as strict as gate+demo)
+    const f = await verifyFromGatewayResponse(s.bytes, mkHeader({ ...consensus, chainId: 1 }), NET, s.publisher);
+    expect(f.verified).toBe(false);
+    expect(f.reason).toMatch(/diverge|forked/i);
+  });
+
   it('empty attestation ("0x", len<=2) → signerMatch=null, verified=false', async () => {
     const s = await buildSigned();
     const v = await verifyAttestation({
