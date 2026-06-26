@@ -1,6 +1,6 @@
 # @payperbyte/sdk — PayPerByte TypeScript SDK
 
-TypeScript SDK for PayPerByte (the BYTE Library) — the cryptographically attested, provenance-verifiable data layer for AI agents. Discover first-party feeds, subscribe, stream payloads, and verify every payload against its on-chain EIP-712 attestation (provenance + tamper-evidence — who signed these exact bytes — not a correctness guarantee). No token; USDC settlement on Arbitrum.
+TypeScript SDK for PayPerByte (the BYTE Library) — the cryptographically attested, provenance-verifiable data layer for AI agents. Discover first-party feeds, subscribe, stream payloads, and verify every payload against its on-chain EIP-712 attestation (provenance + tamper-evidence — who signed these exact bytes — not a correctness guarantee). No token; x402 USDC payments settle on **Base mainnet** (the on-chain subscribe + EIP-712 attestation rail is Arbitrum).
 
 ## Installation
 
@@ -57,11 +57,13 @@ loaded only if you use the gateway.
 ```typescript
 import { privateKeyToAccount } from "viem/accounts";
 import { createPublicClient, http } from "viem";
-import { arbitrumSepolia } from "viem/chains";
+import { base } from "viem/chains";
 import { GatewayClient } from "@payperbyte/sdk";
 
 const account = privateKeyToAccount(process.env.AGENT_PRIVATE_KEY as `0x${string}`);
-const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http() });
+// x402 payments settle on Base mainnet (eip155:8453). publicClient is OPTIONAL for
+// the gasless "exact" path — the facilitator broadcasts; pass one only for on-chain reads.
+const publicClient = createPublicClient({ chain: base, transport: http() });
 
 // Defaults to https://x402.payperbyte.io; pass baseUrl for local dev (:3402).
 const gw = new GatewayClient({ signer: account, publicClient });
@@ -107,7 +109,7 @@ import {
 } from "@payperbyte/sdk";
 
 // 1) verifyFromGatewayResponse — the headline call for the x402 gateway path (what
-// most agents use). It is the FULL decision: recompute keccak256(body) AND recover
+// most agents use). It is the FULL decision: recompute keccak256(responseBody) AND recover
 // the EIP-712 signer under the net-pinned consensus domain, refuse a forked wire
 // domain, and assert the signer is the gateway attester you pinned out-of-band
 // (REQUIRED — a self-asserted header can't prove provenance; omitting it fails closed).
@@ -177,10 +179,11 @@ const pqs = await getPQS(publisherAddr, ARBITRUM_SEPOLIA.indexerUrl);
 
 ## Network Support
 
-| Network | Chain ID | Status |
-|---------|----------|--------|
-| Arbitrum Sepolia | 421614 | Live (testnet) |
-| Arbitrum One | 42161 | Planned (mainnet, audit-gated) |
+| Network | Chain ID | Role | Status |
+|---------|----------|------|--------|
+| Base | 8453 | x402 USDC payment settlement (`GatewayClient`) | **Live (mainnet)** |
+| Arbitrum Sepolia | 421614 | On-chain subscribe + EIP-712 attestation anchor | Live (testnet) |
+| Arbitrum One | 42161 | Attestation mainnet re-anchor | Planned (audit-gated) |
 
 ## PayPerByte (BYTE Library)
 
