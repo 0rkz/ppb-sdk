@@ -213,6 +213,8 @@ Contract addresses are resolved per-network by the SDK (`ARBITRUM_SEPOLIA`, `LOC
 - [byte-x402-gateway](https://github.com/0rkz/byte-x402-gateway) — keyless x402 payment gateway (a wallet, not an API key)
 - [byte-discovery-api](https://github.com/0rkz/byte-discovery-api) — agent discovery endpoint
 
+**Want the pre-wired, deploy-ready kit?** MCP + Verify-Before-Act Agent Starter Kit — give an agent a wallet that verifies receipts before acting. The SDK here stays free MIT; the kit is the assembly + walkthrough. $39 → https://payperbyte.gumroad.com/l/pvykda
+
 ## License
 
 MIT
