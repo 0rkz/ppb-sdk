@@ -1,6 +1,6 @@
 {
   "name": "@payperbyte/sdk",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "type": "commonjs",
   "description": "PayPerByte TypeScript SDK for the BYTE Library — cryptographically attested, provenance-verifiable data for AI agents (proves who signed the exact bytes, not data correctness). No token; direct-allowance USDC settlement on Arbitrum.",
   "main": "dist/index.js",
