@@ -197,12 +197,35 @@ PayPerByte runs on the BYTE Library — a lean 3-contract core. No token; all se
 
 Contract addresses are resolved per-network by the SDK (`ARBITRUM_SEPOLIA`, `LOCAL_ANVIL`).
 
+## Canonical payload bytes — two forms, and why byte-exact verification wins
+
+The primary verify path is **byte-exact**: hash the exact bytes you received against the
+attested hash. That path needs no canonicalization at all and is the strongest tamper
+evidence the SDK offers. Prefer it whenever you hold the delivered bytes.
+
+Canonicalization only enters when a payload is *re-serialized* — and the stack has **two
+canonical-JSON forms**, not one:
+
+- **SDK publish path** (`canonical.ts`): recursively key-sorted, no whitespace. Matches the
+  Python SDK for payloads that keep values to strings/bools/ints; floats, huge ints, and
+  non-BMP keys are explicitly out of scope (this is NOT full RFC 8785/JCS).
+- **First-party live feeds** (`data-feeds`): INSERTION-ORDER compact JSON — a frozen
+  hash-compatibility surface that must never be re-sorted.
+
+A payload signed under one form will not hash-match a re-derivation under the other, so
+`fetchAndVerify` is **form-aware**: it tries the raw response bytes and every known form, and
+if none reproduces the attested hash it throws **`CanonicalFormMismatchError`** — deliberately
+NOT `HashMismatchError`, because a failed re-serialization cannot distinguish tampering from a
+form mismatch. Fail closed either way: don't consume the payload; fetch the exact delivered
+bytes and use byte-exact `verifyPayload`.
+
 ## Modules
 
 - `ByteClient` — low-level client holding the viem clients and contract instances (used by `Publisher`/`Subscriber`)
 - `Publisher` — register a feed, publish data, sign EIP-712 PayloadAttestations
 - `Subscriber` — subscribe, receive payloads, stream events
-- `verifyPayload` / `verifyEventPayload` / `fetchAndVerify` — subscriber-side **hash-only** payload verification against on-chain attestations
+- `verifyPayload` / `verifyEventPayload` — byte-exact **hash-only** payload verification against on-chain attestations
+- `fetchAndVerify` — archive fetch + **form-aware** verification; throws `CanonicalFormMismatchError` (fail-closed) rather than a false tamper alarm when a re-derivation matches no known canonical form
 - **Foreseal Kit** — `signAttestation`, `verifyAttestation` / `verify` (hash **and** signer recovery), `verifyFromEvent`, `verifyFromGatewayResponse`, `getPQS`
 - `Mercat` — feed search and discovery (connects to the indexer API)
 - `GatewayClient` — keyless x402 pay-per-call client (a wallet signs, not an API key); `discover`, `discoverResources`, `fetchFeed`
