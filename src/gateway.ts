@@ -15,13 +15,13 @@
  *
  * BOUNDARY: this x402 USDC payment leg is INDEPENDENT of the on-chain
  * direct-allowance approve step that Subscriber performs (usdc.approve(
- * dataStream, cap) — see subscriber.ts). Those are two distinct USDC flows. In
- * particular, the `fact-oracle` POST requires `subscriber_address` to ALREADY
- * be a registered, allowance-granting subscriber on-chain (a prior
- * Subscriber.subscribe), because the answer is broadcast on-chain to that
- * address and its per-message fee is transferFrom-pulled from the subscriber's
- * DataStream allowance — paying the x402 leg alone is not sufficient for oracle
- * delivery.
+ * dataStream, cap) — see subscriber.ts). Those are two distinct USDC flows. The
+ * live pay-per-call feeds — including the POST verdict oracles
+ * (address-reputation, sanctions-screen, pkg-verdict, reasoning-verdict,
+ * positioning-snapshot, liquidation-stream, evidence-pack) — need only the x402
+ * leg: the paid 200 returns the answer in-body with an embedded EIP-712
+ * attestation, no prior on-chain subscribe required. The subscribe/allowance
+ * flow is for the on-chain publish/subscribe streaming path, not x402 fetches.
  *
  * DEPENDENCIES (peer / OPTIONAL — the heavy @x402 stack is NOT pulled into the
  * core SDK; it is loaded lazily at call time so an SDK consumer who never
@@ -147,10 +147,11 @@ export interface GatewayFetchResult<T = unknown> {
 
 /** Options for fetchFeed(). */
 export interface FetchFeedOptions {
-  /** HTTP method. Defaults to GET; POST_ORACLES feeds require POST. */
+  /** HTTP method. Defaults to GET; POST_ORACLES feeds default to POST. */
   method?: 'GET' | 'POST';
-  /** JSON body for POST feeds (e.g. fact-oracle:
-   *  { question, subscriber_address, max_byte_cost? }). */
+  /** JSON body for POST feeds (e.g. address-reputation:
+   *  { domain | url, address, amount?, chain? }). Body shapes vary per
+   *  oracle — see each feed's 402 challenge (bazaar.info.input). */
   body?: unknown;
 }
 
@@ -158,12 +159,30 @@ const DEFAULT_BASE_URL = 'https://x402.payperbyte.io';
 const DISCLAIMER_HEADER = 'X-BYTE-Disclaimer-Category';
 
 /**
- * Feeds the gateway serves over POST with a JSON body (mirrors POST_ORACLES in
- * x402-gateway/src/index.ts). fact-oracle's body is
- * { question, subscriber_address (0x, REQUIRED — must already be a registered,
- * allowance-granting on-chain subscriber), max_byte_cost?: number (default 2000) }.
+ * Feeds the SDK sends over POST-with-a-JSON-body BY DEFAULT — the POST-only
+ * verdict/pack oracles. Regenerated 2026-07-03 from the live catalog
+ * (GET x402.payperbyte.io/feeds, method === ["POST"]) after the feed cut;
+ * empirically confirmed (POST-only feeds 405 on GET, 402 on POST).
+ * NOT included: the dual GET-digest/POST-verdict feeds `runtime-eol` and
+ * `threat-intel` — they answer GET (a digest, no body) AND POST (a verdict,
+ * needs input), so they default to GET; pass method:'POST' + body for the
+ * verdict. GET-only feeds (weather, earthquakes) are also absent. Everything
+ * not listed defaults to GET.
+ *
+ * Verdict-oracle body shape (e.g. address-reputation): { domain | url,
+ * address (0x), amount?: number, chain?: 'base' | 'arbitrum-one' }. The paid
+ * 200 embeds an EIP-712 PayloadAttestation over the exact answer bytes. Body
+ * shapes vary per oracle — see each feed's 402 challenge (bazaar.info.input).
  */
-const POST_ORACLES = new Set(['fact-oracle', 'evidence-pack', 'usc-statute']);
+const POST_ORACLES = new Set([
+  'address-reputation',
+  'sanctions-screen',
+  'pkg-verdict',
+  'reasoning-verdict',
+  'positioning-snapshot',
+  'liquidation-stream',
+  'evidence-pack',
+]);
 
 /** Load the optional @x402 peer deps lazily. Built from variables so the core
  *  SDK build does not statically require the heavy x402 stack. */
@@ -271,8 +290,10 @@ export class GatewayClient {
   }
 
   /**
-   * The canonical paid retry loop. GET by default; POST_ORACLES feeds
-   * (fact-oracle, evidence-pack, usc-statute) default to POST with a JSON body.
+   * The canonical paid retry loop. GET by default; POST_ORACLES feeds (the
+   * POST-only verdict/pack oracles) default to POST with a JSON body. Dual
+   * feeds (runtime-eol, threat-intel) default to GET; pass method:'POST' + body
+   * for their verdict.
    *
    * Mirrors examples/agent-client/ts/pay-and-fetch.ts exactly:
    *  1. unpaid request; if status !== 402, return processResponse(resp) as-is.
