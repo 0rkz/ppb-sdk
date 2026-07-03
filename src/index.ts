@@ -3,7 +3,13 @@ export { Subscriber } from './subscriber';
 export { Mercat } from './mercat';
 export { ByteClient, type ByteConfig, type NetworkConfig } from './client';
 export { ARBITRUM_SEPOLIA, ARBITRUM_ONE, LOCAL_ANVIL } from './networks';
-export { verifyPayload, verifyEventPayload, fetchAndVerify, HashMismatchError } from './verify';
+export {
+  verifyPayload,
+  verifyEventPayload,
+  fetchAndVerify,
+  HashMismatchError,
+  CanonicalFormMismatchError,
+} from './verify';
 
 // ─── Trust Kit — verify-before-act provenance primitives (Phase 0) ───────────
 // sign + verify (hash AND signer recovery) + read quality score. The shipped

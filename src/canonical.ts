@@ -1,9 +1,18 @@
 /**
- * Canonical JSON serialization — the ONE definition used for keccak256 hashing
- * on BOTH the publish side and the verify side, in BOTH the TypeScript and the
+ * Canonical JSON serialization — the SDK's definition of canonical bytes for
+ * keccak256 hashing, used by the SDK publish path (publisher.ts/publisher.py)
+ * and the SDK verify-side envelope re-wrap, in BOTH the TypeScript and the
  * Python SDK. The publish-side hash and the verify-side hash MUST agree byte for
  * byte, or a logically-identical payload would produce two different keccak256
  * digests and the verifier would raise a false HashMismatchError.
+ *
+ * ⚠️ THIS IS NOT THE ONLY CANONICAL FORM IN THE STACK. The first-party live
+ * feeds (data-feeds/<feed>/server.py) sign INSERTION-ORDER compact JSON — a frozen
+ * hash-compatibility surface that must never be re-sorted. A payload signed
+ * there will NOT hash-match this sorted form. fetchAndVerify is form-aware
+ * (tries both + raw bytes) and throws CanonicalFormMismatchError rather than a
+ * false tamper alarm when re-serialization can't reproduce the attested bytes.
+ * See ops/plans/TICKET_CANONICAL_FORMS_2026-07-03.md.
  *
  * Canonical form = UTF-8 of JSON with recursively lexicographically-sorted
  * object keys and no insignificant whitespace (separators ',' and ':'). This is

@@ -37,6 +37,39 @@ export class HashMismatchError extends Error {
   }
 }
 
+/**
+ * Thrown by fetchAndVerify when a JSON-envelope payload matches the attested
+ * hash under NO known canonical form (raw response bytes, sorted-canonical,
+ * insertion-order). Deliberately NOT a HashMismatchError: once a payload has
+ * been re-serialized, a hash mismatch cannot distinguish tampering from a
+ * canonical-form difference, so this error alleges neither — it tells you to
+ * fetch the exact delivered bytes and use verifyPayload() (byte-exact), which
+ * is the only path that can prove tampering. Fail closed either way: do not
+ * consume the payload.
+ *
+ * Background: two canonical-JSON forms exist in this stack. The SDK publishers
+ * hash SORTED-key canonical bytes (canonical.ts); the first-party live feeds
+ * sign INSERTION-ORDER compact bytes (a frozen hash-compatibility surface).
+ * See ops/plans/TICKET_CANONICAL_FORMS_2026-07-03.md.
+ */
+export class CanonicalFormMismatchError extends Error {
+  constructor(
+    public readonly expected: Hex,
+    public readonly candidates: Readonly<Record<string, Hex>>,
+  ) {
+    super(
+      `payload matched the attested hash ${expected} under no known canonical form (` +
+        Object.entries(candidates)
+          .map(([form, h]) => `${form}=${h}`)
+          .join(', ') +
+        `). A re-serialized JSON envelope cannot distinguish tampering from a ` +
+        `canonical-form mismatch — fetch the exact delivered bytes and verify them ` +
+        `with verifyPayload() (byte-exact). Do not consume this payload.`,
+    );
+    this.name = 'CanonicalFormMismatchError';
+  }
+}
+
 function normalizeHash(h: Hex | string): Hex {
   const lower = h.toLowerCase();
   return (lower.startsWith('0x') ? lower : `0x${lower}`) as Hex;
@@ -125,8 +158,19 @@ export async function fetchAndVerify(
   timeoutMs = 3_000,
 ): Promise<Uint8Array> {
   const hashHex = normalizeHash(payloadHash).slice(2);
-  const url = `${discoveryUrl.replace(/\/$/, '')}/payloads/${hashHex}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  const base = discoveryUrl.replace(/\/$/, '');
+  // discovery-api's route is GET /payload/:hash (singular — discovery-api
+  // src/index.ts:222). Earlier SDK versions fetched /payloads/<hash>, which
+  // that API never served; keep it as a fallback for archives that adopted
+  // the old SDK convention.
+  let res = await fetch(`${base}/payload/${hashHex}`, {
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (res.status === 404) {
+    res = await fetch(`${base}/payloads/${hashHex}`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  }
   if (res.status === 404) {
     throw new Error(`archive miss for payload ${hashHex}`);
   }
@@ -134,26 +178,52 @@ export async function fetchAndVerify(
     throw new Error(`archive fetch failed: ${res.status} ${res.statusText}`);
   }
 
-  // discovery-api wraps payloads as { payload: {...}, ... }. The publisher
-  // hashed the CANONICAL envelope-payload bytes (recursively key-sorted, no
-  // whitespace) — re-serialize through the SAME canonical helper the publish
-  // side uses so keccak256 matches. This envelope re-wrap is the ONLY place the
-  // SDK re-serializes; verifyPayload itself hashes whatever raw bytes it gets.
-  // For raw-bytes archives, fall through to the raw response.
+  // discovery-api wraps payloads as { payload: {...}, ... }. TWO publisher
+  // populations hash DIFFERENT bytes for the same logical payload:
+  //   - SDK publishers (publisher.ts / publisher.py): SORTED-key canonical form.
+  //   - First-party live feeds (data-feeds/*/server.py): INSERTION-ORDER compact
+  //     form — a FROZEN hash-compatibility surface (never re-sort it).
+  // A re-serialized envelope therefore has to be tried against every known
+  // form; a keccak256 match under ANY form proves those bytes are the attested
+  // preimage. If NONE match we throw CanonicalFormMismatchError — NOT
+  // HashMismatchError, because after re-serialization a mismatch cannot
+  // distinguish tampering from a form difference. This envelope re-wrap is the
+  // ONLY place the SDK re-serializes; verifyPayload itself hashes whatever raw
+  // bytes it gets (byte-exact, real tamper semantics).
+  // Known residual gap (documented, fail-closed): the insertion-order candidate
+  // re-derives via JSON.parse → JSON.stringify, which preserves key order but
+  // NOT Python's ensure_ascii \uXXXX escapes or float repr — such payloads fall
+  // through to CanonicalFormMismatchError and must be verified byte-exact.
   const buf = new Uint8Array(await res.arrayBuffer());
-  let canonical: Uint8Array;
+  let payloadValue: unknown;
+  let isEnvelope = false;
   try {
     const text = new TextDecoder().decode(buf);
     const obj = JSON.parse(text);
     if (obj && typeof obj === 'object' && 'payload' in obj) {
-      canonical = canonicalBytes(obj.payload);
-    } else {
-      canonical = buf;
+      isEnvelope = true;
+      payloadValue = (obj as Record<string, unknown>).payload;
     }
   } catch {
-    canonical = buf;
+    // not JSON — raw-bytes archive; byte-exact path below
   }
 
-  verifyPayload(canonical, payloadHash);
-  return canonical;
+  if (!isEnvelope) {
+    verifyPayload(buf, payloadHash); // byte-exact: HashMismatchError = real tamper signal
+    return buf;
+  }
+
+  const expected = normalizeHash(payloadHash);
+  const candidates: Array<[string, Uint8Array]> = [
+    ['raw-response', buf],
+    ['sorted-canonical', canonicalBytes(payloadValue)],
+    ['insertion-order', new TextEncoder().encode(JSON.stringify(payloadValue))],
+  ];
+  const seen: Record<string, Hex> = {};
+  for (const [form, bytes] of candidates) {
+    const h = keccak256(toHex(bytes)).toLowerCase() as Hex;
+    seen[form] = h;
+    if (h === expected) return bytes; // attested preimage found
+  }
+  throw new CanonicalFormMismatchError(expected, seen);
 }
