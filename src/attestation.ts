@@ -189,7 +189,21 @@ export interface Verdict {
   signerMatch: boolean | null;
   /** The recovered EIP-712 signer address (checksummed), or null. */
   recovered: Hex | null;
-  /** deadline < now. ADVISORY ONLY — does NOT fail `verified`. See rule 4. */
+  /**
+   * deadline < now. ADVISORY BY DEFAULT — does NOT fail `verified` unless the
+   * caller opts in via {@link VerifyAttestationArgs.requireFresh}. See rule 4.
+   *
+   * The asymmetry with our other verifiers is deliberate, not an oversight:
+   *  - on-chain, `DataStreamLib` reverts `AttestationExpired` when
+   *    `block.timestamp > att.deadline`, and
+   *  - the buyer-side `@foreseal/gate` folds `!expired` into its own `verified`.
+   * Both of those sit at a point of ACTION (settle / pay), where staleness is
+   * disqualifying. This SDK is also used to verify archived and replayed
+   * payloads, where a once-minted `now+300s` deadline would mark every
+   * historical receipt unverified even though its provenance is immutable — so
+   * the default stays advisory and the strict posture is one flag away:
+   * pass `requireFresh: true` to match the gate/contract behavior.
+   */
   expired: boolean;
   /** Human-readable verdict for logs / post-mortem. */
   reason: string;
@@ -211,6 +225,24 @@ export interface VerifyAttestationArgs {
   net: NetworkConfig;
   /** Override "now" (unix seconds) — for deterministic tests. Defaults to Date.now(). */
   nowSeconds?: bigint;
+  /**
+   * OPT-IN strictness. When `true`, an elapsed `deadline` FAILS `verified`
+   * (`verified = hashMatch && signerMatch && !expired`) — the same posture as
+   * the on-chain `AttestationExpired` revert and `@foreseal/gate`'s buyer
+   * verifier.
+   *
+   * DEFAULT (omitted / `false`) KEEPS TODAY'S ADVISORY BEHAVIOR. This package is
+   * published and in use, so freshness is never enforced behind a consumer's
+   * back; `expired` is still reported either way. Set it at any point of action
+   * (about to pay, settle, or act on the bytes); leave it off when verifying
+   * archived or replayed payloads, where provenance remains meaningful long
+   * after the deadline elapsed.
+   *
+   * There is deliberately no `maxAgeS`: the signature covers `deadline`, not an
+   * issued-at timestamp, so an absolute age is NOT computable from the signed
+   * fields. `requireFresh` is the only expiry check the signature itself covers.
+   */
+  requireFresh?: boolean;
 }
 
 /**
@@ -223,11 +255,14 @@ export interface VerifyAttestationArgs {
  *  - Wrong/forged signer   → signerMatch=false, verified=false.
  *  - Empty/missing att     → signerMatch=null, verified=false (FAIL-CLOSED; we
  *                            do NOT pass on the hash alone).
- *  - Expired deadline      → expired=true, but verified is UNAFFECTED. A
- *                            once-minted `now+300s` deadline makes every aged
- *                            feed "expired"; staleness is a freshness axis, not
- *                            a provenance verdict. Surface it; let the caller
- *                            decide policy.
+ *  - Expired deadline      → expired=true, and verified is UNAFFECTED *unless*
+ *                            the caller passes `requireFresh: true`, which
+ *                            folds `!expired` into verified (the on-chain +
+ *                            `@foreseal/gate` posture). A once-minted
+ *                            `now+300s` deadline makes every aged feed
+ *                            "expired"; staleness is a freshness axis, not a
+ *                            provenance verdict, so by default we surface it
+ *                            and let the caller decide policy.
  *
  * Throws nothing — always returns a Verdict (recovery failures become
  * signerMatch=false rather than exceptions).
@@ -317,7 +352,10 @@ export async function verifyAttestation(
     signerMatch = false;
   }
 
-  const verified = hashMatch && signerMatch;
+  // Freshness is OPT-IN (`requireFresh`). Omitted/false ⇒ byte-identical to the
+  // shipped 0.2.1 verdict: expiry is reported but never fails `verified`.
+  const freshOk = !args.requireFresh || !expired;
+  const verified = hashMatch && signerMatch && freshOk;
   return {
     verified,
     hashMatch,
@@ -330,7 +368,11 @@ export async function verifyAttestation(
         (expired ? ' (note: deadline elapsed; advisory only, provenance is immutable)' : '')
       : !hashMatch
         ? 'HASH MISMATCH — the received bytes are NOT what the publisher attested; do not act'
-        : 'attestation signature did not recover to the named publisher; do not act',
+        : !signerMatch
+          ? 'attestation signature did not recover to the named publisher; do not act'
+          : 'provenance is intact (bytes hash-match AND the attestation recovers to the ' +
+            'named publisher) but the attested deadline has elapsed and requireFresh was ' +
+            'set — refusing on staleness; re-fetch before acting',
   };
 }
 
@@ -380,12 +422,16 @@ export interface AttestedEvent {
  * missing payloadHash) on untrusted transport input route through the
  * fail-closed path instead of throwing — the documented "throws nothing; returns
  * a Verdict" contract holds even on garbage input.
+ *
+ * `requireFresh` is forwarded to {@link verifyAttestation}: omitted/false keeps
+ * expiry advisory (the default), `true` folds `!expired` into `verified`.
  */
 export async function verifyFromEvent(
   event: AttestedEvent,
   payloadBytes: Uint8Array | Hex | string,
   net: NetworkConfig,
   nowSeconds?: bigint,
+  requireFresh?: boolean,
 ): Promise<Verdict> {
   const rawDeadline = event.attestationDeadline ?? event.deadline ?? 0n;
   const payloadLength = toBigIntOr(event.payloadLength);
@@ -410,6 +456,7 @@ export async function verifyFromEvent(
     deadline,
     net,
     nowSeconds,
+    requireFresh,
   });
 }
 
@@ -452,6 +499,11 @@ export interface GatewayByteAttestation {
  *                           the already-parsed object, or null if absent.
  * @param expectedAttester  the gateway attester address (out-of-band). REQUIRED
  *                          for a meaningful verdict; omitting it fails closed.
+ * @param nowSeconds  override "now" (unix seconds) — for deterministic tests.
+ * @param requireFresh  forwarded to {@link verifyAttestation}: omitted/false
+ *                      keeps expiry advisory (the default), `true` folds
+ *                      `!expired` into `verified`. Pass `true` when this verdict
+ *                      gates an action (pay / settle / act on the bytes).
  */
 export async function verifyFromGatewayResponse(
   responseBody: Uint8Array | Hex | string,
@@ -459,6 +511,7 @@ export async function verifyFromGatewayResponse(
   net: NetworkConfig,
   expectedAttester?: Hex,
   nowSeconds?: bigint,
+  requireFresh?: boolean,
 ): Promise<Verdict> {
   let att: GatewayByteAttestation | null = null;
   if (attestationHeader) {
@@ -532,6 +585,7 @@ export async function verifyFromGatewayResponse(
     deadline,
     net,
     nowSeconds,
+    requireFresh,
   });
 }
 
