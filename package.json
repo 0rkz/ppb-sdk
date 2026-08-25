@@ -1,10 +1,13 @@
 {
   "name": "@payperbyte/sdk",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "commonjs",
   "description": "PayPerByte TypeScript SDK \u2014 cryptographically attested, provenance-verifiable data for AI agents: proves which publisher signed the exact bytes (authenticity + tamper-evidence, not data correctness). Pay-per-call via x402 in USDC on Base mainnet; every payload carries an EIP-712 PayloadAttestation receipt you verify before acting. No token, no API keys. Subscribe to first-party on-chain streams on Arbitrum Sepolia (audit-gated).",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "engines": {
+    "node": ">=18"
+  },
   "files": [
     "dist",
     "abis"
@@ -20,8 +23,8 @@
     "viem": "^2.20.0"
   },
   "peerDependencies": {
-    "@x402/core": "^2.13.0",
-    "@x402/evm": "^2.13.0"
+    "@x402/core": "^2.15.0",
+    "@x402/evm": "^2.15.0"
   },
   "peerDependenciesMeta": {
     "@x402/core": {

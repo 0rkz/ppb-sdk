@@ -6,13 +6,15 @@
  *     only falls back to POST_ORACLES when the catalog fetch itself fails
  *     (fail-open, never silently to GET-always).
  *
- *  2. shapeResult() is rewritten against the REAL @x402/core@2.13+ client
- *     contract — `{status, paymentStatus, body, header}` — not the
- *     `result.kind` shape that never existed in that package. In particular
- *     a paid 2xx whose PAYMENT-RESPONSE header is missing/undecodable
- *     (paymentStatus 'none') must return the body with settlement: null, NOT
- *     throw — that was the live regression (a real settled $0.01 Base
- *     payment threw "gateway error 200" in the SDK).
+ *  2. shapeResult() is rewritten against the REAL @x402/core@2.15.0+ client
+ *     contract — `{status, paymentStatus, body, header}`. `result.kind` was
+ *     a real field in @x402/core 2.13.0/2.14.0 (a `{kind: ...}` union); the
+ *     contract changed to `paymentStatus` at 2.15.0, and the SDK's peer
+ *     floor is now ^2.15.0 to match (see gateway.ts's shapeResult doc). In
+ *     particular a paid 2xx whose PAYMENT-RESPONSE header is
+ *     missing/undecodable (paymentStatus 'none') must return the body with
+ *     settlement: null, NOT throw — that was the live regression (a real
+ *     settled $0.01 Base payment threw "gateway error 200" in the SDK).
  *
  * No network: fetch is mocked with real `Response` objects (Node's global
  * fetch/Response/Headers), and shapeResult (a private method) is exercised
@@ -36,7 +38,7 @@ function newClient() {
 }
 
 /** Minimal live-shaped /feeds catalog fixture (subset of the real schema). */
-function catalogResponse(feeds: Array<{ id: string; method: Array<'GET' | 'POST'> }>) {
+function catalogResponse(feeds: Array<{ id: string; method: string[] }>) {
   return new Response(
     JSON.stringify({
       protocol: 'PayPerByte x402 Gateway',
@@ -257,6 +259,64 @@ describe('GatewayClient.shapeResult (Bug 2: rewritten against the real @x402/cor
     expect((caught as GatewayError).message).toMatch(/settlement failed/);
   });
 
+  it('paid 200 with an unrecognizable receipt (paymentStatus payment_required on a 2xx, FD H3) must NOT throw -> data with settlement: null', () => {
+    // @x402/core's parsePaymentResult can land on 'payment_required' even on
+    // an HTTP 200 when the decoded X-PAYMENT-RESPONSE header doesn't look
+    // like a SettleResponse (no `success` field) — an unrecognizable
+    // receipt, not an actual still-402.
+    const result = {
+      status: 200,
+      paymentStatus: 'payment_required' as const,
+      body: { answer: { forecast: 'sunny' } },
+      header: { unexpectedShape: true },
+    };
+
+    const shaped = (client as any).shapeResult(result, 'general');
+
+    expect(shaped.data).toEqual(result.body);
+    expect(shaped.settlement).toBeNull();
+    expect(shaped.disclaimerCategory).toBe('general');
+  });
+
+  it('still-402 (payment_required) on an actual non-2xx status still throws', () => {
+    const result = {
+      status: 402,
+      paymentStatus: 'payment_required' as const,
+      body: { error: 'insufficient funds' },
+      header: { unexpectedShape: true },
+    };
+
+    expect(() => (client as any).shapeResult(result, undefined)).toThrow(GatewayError);
+  });
+
+  it('settled paymentStatus on a non-2xx status (e.g. 500, FD H4) throws and carries the settlement info, not the error body as data', () => {
+    const result = {
+      status: 500,
+      paymentStatus: 'settled' as const,
+      body: { error: 'internal error' },
+      header: {
+        success: true,
+        payer: '0x2222222222222222222222222222222222222222',
+        transaction: '0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddead',
+      },
+    };
+
+    let caught: unknown;
+    try {
+      (client as any).shapeResult(result, undefined);
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(GatewayError);
+    expect((caught as GatewayError).status).toBe(500);
+    expect((caught as GatewayError).settleResponse).toEqual({
+      success: true,
+      payer: '0x2222222222222222222222222222222222222222',
+      transaction: '0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddeaddead',
+    });
+  });
+
   it('non-2xx with no payment header (e.g. 500) -> throws a generic GatewayError', () => {
     const result = {
       status: 500,
@@ -298,5 +358,115 @@ describe('GatewayClient.fetchFeed end-to-end regression (mocked fetch, real @x40
     expect(res.data).toEqual({ answer: { forecast: 'sunny' } });
     expect(res.settlement).toBeNull();
     expect(res.disclaimerCategory).toBe('general');
+  });
+});
+
+describe('GatewayClient catalog fetch resilience (FD H5: timeout + failure-TTL retry)', () => {
+  it('discover() attaches an abort signal to GET /feeds so a hung fetch cannot stall forever', async () => {
+    const client = newClient();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      catalogResponse([{ id: 'weather', method: ['GET'] }]),
+    );
+
+    await client.discover();
+
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('retries the method catalog after the failure TTL elapses, not before (fake Date.now)', async () => {
+    const client = newClient();
+    let catalogCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any) => {
+      const url = String(input);
+      if (url.endsWith('/feeds')) {
+        catalogCalls++;
+        throw new TypeError('network error');
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+
+    const t0 = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(t0);
+
+    try {
+      await client.fetchFeed('address-reputation', { body: {} });
+      expect(catalogCalls).toBe(1); // first attempt: catalog fetch fails, falls back to POST_ORACLES
+
+      await client.fetchFeed('address-reputation', { body: {} });
+      expect(catalogCalls).toBe(1); // still within the 60s failure TTL: cached failure, no re-fetch
+
+      nowSpy.mockReturnValue(t0 + 61_000); // TTL elapsed
+
+      await client.fetchFeed('address-reputation', { body: {} });
+      expect(catalogCalls).toBe(2); // TTL elapsed: retries the catalog fetch
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+});
+
+describe('GatewayClient method resolution: case-insensitive catalog methods (FD L1)', () => {
+  it('resolves GET for a catalog entry whose method[] is lowercase', async () => {
+    const client = newClient();
+    const calls: Array<{ url: string; method?: string }> = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, method: init?.method });
+      if (url.endsWith('/feeds')) {
+        return catalogResponse([{ id: 'weather', method: ['get'] }]);
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+
+    await client.fetchFeed('weather');
+
+    const feedCall = calls.find((c) => c.url.endsWith('/feeds/weather'));
+    expect(feedCall?.method).toBe('GET');
+  });
+
+  it('resolves POST for a POST-only catalog entry whose method[] is mixed-case', async () => {
+    const client = newClient();
+    const calls: Array<{ url: string; method?: string }> = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, method: init?.method });
+      if (url.endsWith('/feeds')) {
+        return catalogResponse([{ id: 'cctp-attestation-latency', method: ['Post'] }]);
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+
+    await client.fetchFeed('cctp-attestation-latency', { body: {} });
+
+    const feedCall = calls.find((c) => c.url.endsWith('/feeds/cctp-attestation-latency'));
+    expect(feedCall?.method).toBe('POST');
+  });
+
+  it('drops a malformed (non-string) method[] entry for one feed without discarding the whole catalog (FD N1 regression)', async () => {
+    // 'brand-new-oracle' is deliberately NOT in the static POST_ORACLES
+    // fallback list: if a malformed entry elsewhere in the catalog threw
+    // inside loadMethodCatalog()'s .then() (pre-fix behavior), the .catch()
+    // would swallow it and discard EVERY feed's method[] — including this
+    // one's real, valid ['POST'] — falling back to POST_ORACLES, which
+    // doesn't know this feed and would wrongly resolve GET.
+    const client = newClient();
+    const calls: Array<{ url: string; method?: string }> = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, method: init?.method });
+      if (url.endsWith('/feeds')) {
+        return catalogResponse([
+          { id: 'broken-feed', method: [null as any] },
+          { id: 'brand-new-oracle', method: ['POST'] },
+        ]);
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+
+    await client.fetchFeed('brand-new-oracle', { body: {} });
+
+    const feedCall = calls.find((c) => c.url.endsWith('/feeds/brand-new-oracle'));
+    expect(feedCall?.method).toBe('POST');
   });
 });

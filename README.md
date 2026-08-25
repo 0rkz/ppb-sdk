@@ -72,8 +72,12 @@ const gw = new GatewayClient({ signer: account, publicClient });
 const { feeds } = await gw.discover();
 
 // Pay-per-call a GET feed: unpaid → 402 → wallet signs USDC → retry → data.
-const { data, settlement, disclaimerCategory } = await gw.fetchFeed("defi-yields");
-console.log(settlement?.transaction); // on-chain settlement tx hash
+const { data, settlement, disclaimerCategory } = await gw.fetchFeed("weather");
+// settlement can be null even on a genuinely paid call — the gateway
+// sometimes omits/the client can't decode the receipt header; the 2xx body
+// is still real either way (see GatewayFetchResult). Only read the tx hash
+// when a receipt actually decoded.
+console.log(settlement?.transaction); // on-chain settlement tx hash, or undefined
 
 // POST oracle (address-reputation): a synchronous signed verdict — pass the query
 // body; the paid 200 returns { answer, attestation } you verify before acting.

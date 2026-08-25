@@ -27,8 +27,19 @@
  * DEPENDENCIES (peer / OPTIONAL — the heavy @x402 stack is NOT pulled into the
  * core SDK; it is loaded lazily at call time so an SDK consumer who never
  * touches the gateway never needs it installed):
- *   '@x402/core'  ^2.13.0   (x402Client, x402HTTPClient)
- *   '@x402/evm'   ^2.13.0   (registerExactEvmScheme, toClientEvmSigner)
+ *   '@x402/core'  ^2.15.0   (x402Client, x402HTTPClient — shapeResult() below
+ *                            reads `result.paymentStatus`, a field that only
+ *                            exists from 2.15.0 onward; 2.13.0/2.14.0 return a
+ *                            `{kind: ...}` union instead and would silently
+ *                            mis-shape every response — see shapeResult doc)
+ *   '@x402/evm'   ^2.15.0   (registerExactEvmScheme, toClientEvmSigner —
+ *                            floor matched to @x402/core: each @x402/evm
+ *                            release pins its own @x402/core dependency to
+ *                            `~<same-minor>`, so installing an older
+ *                            @x402/evm pulls a pre-2.15 @x402/core in at the
+ *                            TOP level too — an unmatched evm floor would
+ *                            silently reopen the H1 bug via @x402/evm's own
+ *                            dependency instead of the SDK's peer range)
  *   'viem'        ^2.21.0   (the account/signer + public client)
  */
 
@@ -171,6 +182,10 @@ export interface FetchFeedOptions {
 
 const DEFAULT_BASE_URL = 'https://x402.payperbyte.io';
 const DISCLAIMER_HEADER = 'X-BYTE-Disclaimer-Category';
+/** Abort GET /feeds after this long — a hung catalog fetch must not stall fetchFeed. */
+const CATALOG_FETCH_TIMEOUT_MS = 3000;
+/** How long a failed catalog fetch stays cached before the next fetchFeed retries it. */
+const CATALOG_FAILURE_TTL_MS = 60_000;
 
 /**
  * OFFLINE FALLBACK ONLY — the live `GET /feeds` catalog (each entry's
@@ -236,7 +251,7 @@ async function loadX402(): Promise<{
   } catch (e) {
     throw new Error(
       'GatewayClient requires the optional x402 peer deps. Install them:\n' +
-        "  npm install '@x402/core@^2.13.0' '@x402/evm@^2.13.0' viem\n" +
+        "  npm install '@x402/core@^2.15.0' '@x402/evm@^2.15.0' viem\n" +
         `(original error: ${e instanceof Error ? e.message : String(e)})`,
     );
   }
@@ -251,11 +266,17 @@ export class GatewayClient {
   /**
    * Lazily-fetched `id -> method[]` map, built from `GET /feeds` the first
    * time `fetchFeed` needs a method and none was given explicitly. Cached for
-   * the lifetime of this client — one catalog call max, success or failure
-   * (a failed fetch is cached too, so a client on a flaky network doesn't
-   * retry it on every single fetchFeed call; see resolveMethod()).
+   * the lifetime of this client on success. A failed fetch is cached too — a
+   * client on a flaky network doesn't retry it on every single fetchFeed call
+   * — but only for `CATALOG_FAILURE_TTL_MS`: a long-lived client must not pin
+   * itself to the static POST_ORACLES fallback forever just because one GET
+   * /feeds hiccuped. See loadMethodCatalog() / resolveMethod().
    */
   private methodCatalogPromise: Promise<Map<string, Array<'GET' | 'POST'>>> | null = null;
+  /** Wall-clock time (ms) the last catalog fetch failed, or null if the
+   *  current methodCatalogPromise hasn't failed (unset, pending, or resolved
+   *  successfully). Drives the retry-after-TTL check in loadMethodCatalog(). */
+  private methodCatalogFailedAt: number | null = null;
 
   constructor(opts: GatewayClientOptions) {
     if (!opts || !opts.signer) {
@@ -272,7 +293,7 @@ export class GatewayClient {
    * never recompute price.
    */
   async discover(): Promise<GatewayCatalog> {
-    const res = await fetch(`${this.baseUrl}/feeds`);
+    const res = await fetch(`${this.baseUrl}/feeds`, { signal: AbortSignal.timeout(CATALOG_FETCH_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`gateway /feeds failed: ${res.status} ${res.statusText}`);
     return (await res.json()) as GatewayCatalog;
   }
@@ -322,23 +343,52 @@ export class GatewayClient {
   }
 
   /**
-   * Fetch (once) and cache `GET /feeds` as an `id -> method[]` map. Never
-   * throws: on failure it caches an empty map so resolveMethod() falls
-   * through to the POST_ORACLES fallback (fail-open, not fetched again).
+   * Fetch and cache `GET /feeds` as an `id -> method[]` map. Never throws: on
+   * failure it caches an empty map so resolveMethod() falls through to the
+   * POST_ORACLES fallback (fail-open) — but only for CATALOG_FAILURE_TTL_MS;
+   * once that elapses the next call retries the fetch instead of staying
+   * pinned to the fallback for the client's whole lifetime.
    */
   private loadMethodCatalog(): Promise<Map<string, Array<'GET' | 'POST'>>> {
+    if (
+      this.methodCatalogFailedAt !== null &&
+      Date.now() - this.methodCatalogFailedAt >= CATALOG_FAILURE_TTL_MS
+    ) {
+      this.methodCatalogPromise = null;
+      this.methodCatalogFailedAt = null;
+    }
     if (!this.methodCatalogPromise) {
       this.methodCatalogPromise = this.discover()
         .then((catalog) => {
           const map = new Map<string, Array<'GET' | 'POST'>>();
           for (const feed of catalog.feeds) {
             if (Array.isArray(feed.method) && feed.method.length > 0) {
-              map.set(feed.id, feed.method);
+              // Normalize casing so a catalog serving lowercase/mixed-case
+              // methods still resolves — resolveMethod() compares against
+              // the uppercase 'GET' literal. Tolerate a malformed entry (a
+              // non-string element): drop it rather than throw, so one bad
+              // feed can't take the whole catalog fetch down (the .catch()
+              // below is for network/JSON failures, not per-feed data
+              // problems — a throw here would wrongly discard every other
+              // feed's method[] and TTL-cache the failure). A feed left with
+              // an empty method[] after filtering just isn't set in the map,
+              // so resolveMethod() falls through to POST_ORACLES/default for
+              // that feed only.
+              // Cast to unknown[] first: the declared type promises 'GET' |
+              // 'POST' elements, but this is untrusted network data — a
+              // malformed catalog can send anything.
+              const methods = (feed.method as unknown as unknown[])
+                .filter((m): m is string => typeof m === 'string')
+                .map((m) => m.toUpperCase()) as Array<'GET' | 'POST'>;
+              if (methods.length > 0) map.set(feed.id, methods);
             }
           }
           return map;
         })
-        .catch(() => new Map<string, Array<'GET' | 'POST'>>());
+        .catch(() => {
+          this.methodCatalogFailedAt = Date.now();
+          return new Map<string, Array<'GET' | 'POST'>>();
+        });
     }
     return this.methodCatalogPromise;
   }
@@ -425,11 +475,16 @@ export class GatewayClient {
 
   /**
    * Normalize an x402HTTPClient.processResponse() result into a
-   * GatewayFetchResult. Written against the REAL @x402/core@2.13+ client
-   * contract (there is no `result.kind` — that was never a real field, see
-   * node_modules/@x402/core/dist/cjs/client/index.d.ts and the
-   * `parsePaymentResult` impl in dist/cjs/client/index.js, verified against
-   * installed @x402/core@2.23.0, 2026-08-25):
+   * GatewayFetchResult. Written against the REAL @x402/core@2.15.0+ client
+   * contract (verified by reading node_modules/@x402/core/dist/cjs/client/
+   * index.d.ts across 2.13.0 through 2.23.0, 2026-08-25): `result.kind` was
+   * NOT a fabricated field — @x402/core 2.13.0 and 2.14.0's processResponse()
+   * really does return a `{kind: 'success' | 'settle_failed' |
+   * 'payment_required' | 'error' | 'passthrough', ...}` union. The contract
+   * changed to the `paymentStatus` shape below at 2.15.0. This SDK's
+   * peerDependencies now floor @x402/core (and @x402/evm) at ^2.15.0 — see
+   * the class doc comment — specifically so this switch is only ever fed the
+   * shape it's written against:
    *
    *   type HTTPResourceResponse = {
    *     status: number;
@@ -444,10 +499,17 @@ export class GatewayClient {
    * couldn't decode (the live regression this fixes: settle tx
    * 0xa610b39978132b886b0ff73311d238a4b131fbe8cabffd475a9555b429b0913a settled
    * on-chain and the gateway's delivery log confirmed it, but the SDK threw
-   * "gateway error 200" on the successful, delivered response because
-   * `result.kind` was always undefined against this contract). A delivered
-   * 2xx body is not punished for a missing receipt header: it's returned with
-   * `settlement: null`, same as an always-free route — never thrown.
+   * "gateway error 200" on the successful, delivered response because it was
+   * still switching on `result.kind`, which is always undefined against the
+   * paymentStatus-shaped contract). A delivered 2xx body is not punished for
+   * a missing/undecodable receipt: it's returned with `settlement: null`,
+   * same as an always-free route — never thrown. The same treatment applies
+   * when @x402/core itself lands on `paymentStatus: 'payment_required'` for a
+   * 2xx (an unrecognizable receipt, not an actual still-402 — see below).
+   * Conversely this is status-gated the other way too: a 'settled'
+   * paymentStatus on a non-2xx status throws rather than handing the error
+   * body back as `data` with `settlement.success: true` — money moved, the
+   * request still failed, fail closed.
    */
   private shapeResult<T>(result: any, disclaimerCategory?: string): GatewayFetchResult<T> {
     const { status, paymentStatus, body, header } = result as {
@@ -458,16 +520,27 @@ export class GatewayClient {
     };
 
     switch (paymentStatus) {
-      case 'settled':
-        return {
-          data: body as T,
-          settlement: {
-            success: Boolean(header?.success),
-            payer: header?.payer,
-            transaction: header?.transaction,
-          },
-          disclaimerCategory,
+      case 'settled': {
+        const settlement: GatewaySettlement = {
+          success: Boolean(header?.success),
+          payer: header?.payer,
+          transaction: header?.transaction,
         };
+        if (status < 200 || status >= 300) {
+          // A real settlement receipt decoded, but the request itself failed
+          // server-side (e.g. a 500). Money moved; the request did not
+          // succeed — fail closed instead of handing the error body back as
+          // `data` with `settlement.success: true`, which would read as a
+          // successful paid call.
+          throw new GatewayError(
+            `gateway error ${status} after a settled payment — payment succeeded, the request did not`,
+            status,
+            body,
+            settlement,
+          );
+        }
+        return { data: body as T, settlement, disclaimerCategory };
+      }
 
       case 'settle_failed':
         throw new GatewayError(
@@ -478,6 +551,15 @@ export class GatewayClient {
         );
 
       case 'payment_required':
+        if (status >= 200 && status < 300) {
+          // @x402/core's parsePaymentResult can land here even on a 2xx when
+          // the decoded X-PAYMENT-RESPONSE header doesn't look like a
+          // SettleResponse (no `success` field) — an unrecognizable receipt
+          // on an otherwise-successful response, not an actual still-402.
+          // Same treatment as a missing/undecodable receipt: return the
+          // body, no settlement, never throw on a delivered 2xx.
+          return { data: body as T, settlement: null, disclaimerCategory };
+        }
         throw new GatewayError(
           'still 402 after paying — payment requirements not satisfiable',
           status,
