@@ -77,6 +77,9 @@ console.log(settlement?.transaction); // on-chain settlement tx hash
 
 // POST oracle (address-reputation): a synchronous signed verdict — pass the query
 // body; the paid 200 returns { answer, attestation } you verify before acting.
+// No method needed: fetchFeed reads the live catalog (GET /feeds) to see this
+// feed only answers POST, and uses that — an explicit `method` always wins if
+// you pass one, this auto-derivation only fills in when you don't.
 await gw.fetchFeed("address-reputation", {
   body: { domain: "github.com", address: "0x1111111111111111111111111111111111111111" },
 });

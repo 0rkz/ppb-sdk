@@ -16,12 +16,13 @@
  * BOUNDARY: this x402 USDC payment leg is INDEPENDENT of the on-chain
  * direct-allowance approve step that Subscriber performs (usdc.approve(
  * dataStream, cap) — see subscriber.ts). Those are two distinct USDC flows. The
- * live pay-per-call feeds — including the POST verdict oracles
- * (address-reputation, sanctions-screen, pkg-verdict, reasoning-verdict,
- * positioning-snapshot, liquidation-stream, evidence-pack) — need only the x402
- * leg: the paid 200 returns the answer in-body with an embedded EIP-712
- * attestation, no prior on-chain subscribe required. The subscribe/allowance
- * flow is for the on-chain publish/subscribe streaming path, not x402 fetches.
+ * live pay-per-call feeds — including the POST verdict oracles (currently
+ * address-reputation, sanctions-screen, pkg-verdict, reasoning-verdict,
+ * merchant-screen, positioning-snapshot, cctp-attestation-latency — see
+ * `GET /feeds`, never hardcoded here) — need only the x402 leg: the paid 200
+ * returns the answer in-body with an embedded EIP-712 attestation, no prior
+ * on-chain subscribe required. The subscribe/allowance flow is for the
+ * on-chain publish/subscribe streaming path, not x402 fetches.
  *
  * DEPENDENCIES (peer / OPTIONAL — the heavy @x402 stack is NOT pulled into the
  * core SDK; it is loaded lazily at call time so an SDK consumer who never
@@ -66,6 +67,14 @@ export interface GatewayFeed {
   disclaimerCategory: string;
   /** On-chain publisher address — present on publisher-backed feeds only. */
   publisher?: `0x${string}`;
+  /**
+   * HTTP methods this feed answers on, e.g. `['GET']`, `['POST']`, or
+   * `['GET', 'POST']` for dual digest/verdict feeds. Read live from
+   * `GET /feeds` — `fetchFeed` uses this (not a hardcoded list) to pick the
+   * default method. Optional for forward-compat with older catalogs that
+   * predate this field.
+   */
+  method?: Array<'GET' | 'POST'>;
 }
 
 /** The parsed GET /feeds catalog. */
@@ -147,7 +156,12 @@ export interface GatewayFetchResult<T = unknown> {
 
 /** Options for fetchFeed(). */
 export interface FetchFeedOptions {
-  /** HTTP method. Defaults to GET; POST_ORACLES feeds default to POST. */
+  /**
+   * HTTP method. If omitted, resolved from the live `GET /feeds` catalog
+   * (GET if the feed offers it, else POST); the POST_ORACLES allow-list is
+   * only an offline fallback if the catalog fetch fails. Explicit values here
+   * always win.
+   */
   method?: 'GET' | 'POST';
   /** JSON body for POST feeds (e.g. address-reputation:
    *  { domain | url, address, amount?, chain? }). Body shapes vary per
@@ -159,10 +173,20 @@ const DEFAULT_BASE_URL = 'https://x402.payperbyte.io';
 const DISCLAIMER_HEADER = 'X-BYTE-Disclaimer-Category';
 
 /**
- * Feeds the SDK sends over POST-with-a-JSON-body BY DEFAULT — the POST-only
- * verdict/pack oracles. Regenerated 2026-07-03 from the live catalog
- * (GET x402.payperbyte.io/feeds, method === ["POST"]) after the feed cut;
- * empirically confirmed (POST-only feeds 405 on GET, 402 on POST).
+ * OFFLINE FALLBACK ONLY — the live `GET /feeds` catalog (each entry's
+ * `method` array) is the source of truth for which HTTP method a feed
+ * answers on; `fetchFeed` fetches and caches that catalog and consults this
+ * set only if the catalog fetch itself fails (fail-open: never default an
+ * unreachable-catalog POST-only oracle to GET). This is the THIRD time this
+ * list has drifted from the live catalog (0.1.9 named 2 feeds since cut and
+ * missed 5 live ones; 0.2.0's regen missed the post-cut additions
+ * `merchant-screen` and `cctp-attestation-latency` and still named 2 feeds
+ * — `liquidation-stream`, `evidence-pack` — no longer in the live catalog).
+ * Regenerated 2026-08-25 from the live catalog (GET x402.payperbyte.io/feeds,
+ * `method === ["POST"]`, i.e. POST-only — NOT the dual GET+POST feeds below).
+ * If you're tempted to hand-edit this list again: don't — fix the catalog
+ * lookup instead, this is a fallback of last resort.
+ *
  * NOT included: the dual GET-digest/POST-verdict feeds `runtime-eol` and
  * `threat-intel` — they answer GET (a digest, no body) AND POST (a verdict,
  * needs input), so they default to GET; pass method:'POST' + body for the
@@ -179,9 +203,9 @@ const POST_ORACLES = new Set([
   'sanctions-screen',
   'pkg-verdict',
   'reasoning-verdict',
+  'merchant-screen',
   'positioning-snapshot',
-  'liquidation-stream',
-  'evidence-pack',
+  'cctp-attestation-latency',
 ]);
 
 /** Load the optional @x402 peer deps lazily. Built from variables so the core
@@ -224,6 +248,14 @@ export class GatewayClient {
   private readonly publicClient: any;
   /** Lazily-built x402HTTPClient (one per GatewayClient). */
   private x402: any = null;
+  /**
+   * Lazily-fetched `id -> method[]` map, built from `GET /feeds` the first
+   * time `fetchFeed` needs a method and none was given explicitly. Cached for
+   * the lifetime of this client — one catalog call max, success or failure
+   * (a failed fetch is cached too, so a client on a flaky network doesn't
+   * retry it on every single fetchFeed call; see resolveMethod()).
+   */
+  private methodCatalogPromise: Promise<Map<string, Array<'GET' | 'POST'>>> | null = null;
 
   constructor(opts: GatewayClientOptions) {
     if (!opts || !opts.signer) {
@@ -290,17 +322,58 @@ export class GatewayClient {
   }
 
   /**
-   * The canonical paid retry loop. GET by default; POST_ORACLES feeds (the
-   * POST-only verdict/pack oracles) default to POST with a JSON body. Dual
-   * feeds (runtime-eol, threat-intel) default to GET; pass method:'POST' + body
-   * for their verdict.
+   * Fetch (once) and cache `GET /feeds` as an `id -> method[]` map. Never
+   * throws: on failure it caches an empty map so resolveMethod() falls
+   * through to the POST_ORACLES fallback (fail-open, not fetched again).
+   */
+  private loadMethodCatalog(): Promise<Map<string, Array<'GET' | 'POST'>>> {
+    if (!this.methodCatalogPromise) {
+      this.methodCatalogPromise = this.discover()
+        .then((catalog) => {
+          const map = new Map<string, Array<'GET' | 'POST'>>();
+          for (const feed of catalog.feeds) {
+            if (Array.isArray(feed.method) && feed.method.length > 0) {
+              map.set(feed.id, feed.method);
+            }
+          }
+          return map;
+        })
+        .catch(() => new Map<string, Array<'GET' | 'POST'>>());
+    }
+    return this.methodCatalogPromise;
+  }
+
+  /**
+   * Resolve the HTTP method for a feed id when the caller didn't pass one
+   * explicitly. Order: (1) the feed's live `method[]` from `GET /feeds` — GET
+   * if it's offered, else POST (mirrors the dual-feed / POST-only split);
+   * (2) if the feed is absent from the catalog (unlisted, or the catalog
+   * fetch itself failed), fall back to the static POST_ORACLES allow-list —
+   * fail-open to that fallback, never silently to GET-always, so an
+   * unreachable catalog can't turn a POST-only oracle into a 405.
+   */
+  private async resolveMethod(id: string): Promise<'GET' | 'POST'> {
+    const catalog = await this.loadMethodCatalog();
+    const methods = catalog.get(id);
+    if (methods && methods.length > 0) {
+      return methods.includes('GET') ? 'GET' : 'POST';
+    }
+    return POST_ORACLES.has(id) ? 'POST' : 'GET';
+  }
+
+  /**
+   * The canonical paid retry loop. Method: an explicit `options.method` wins;
+   * otherwise it's resolved from the live `GET /feeds` catalog (GET if the
+   * feed offers it, else POST), fetched lazily and cached on this client —
+   * see resolveMethod(). Dual feeds (runtime-eol, threat-intel) default to
+   * GET that way; pass method:'POST' + body for their verdict.
    *
    * Mirrors examples/agent-client/ts/pay-and-fetch.ts exactly:
    *  1. unpaid request; if status !== 402, return processResponse(resp) as-is.
    *  2. parse PaymentRequired from headers/body.
    *  3. createPaymentPayload -> encodePaymentSignatureHeader (WALLET SIGNS HERE).
    *  4. retry the SAME request with the payment headers merged.
-   *  5. processResponse(paidResp); switch on result.kind.
+   *  5. processResponse(paidResp); shape it — see shapeResult().
    */
   async fetchFeed<T = unknown>(
     feedIdOrPath: string,
@@ -308,7 +381,7 @@ export class GatewayClient {
   ): Promise<GatewayFetchResult<T>> {
     const url = this.resolveUrl(feedIdOrPath);
     const id = this.feedIdOf(feedIdOrPath);
-    const method = options.method ?? (POST_ORACLES.has(id) ? 'POST' : 'GET');
+    const method = options.method ?? (await this.resolveMethod(id));
 
     const init: RequestInit = { method };
     if (method === 'POST') {
@@ -350,44 +423,77 @@ export class GatewayClient {
     return this.shapeResult<T>(result, paidDisclaimer);
   }
 
-  /** Normalize an x402PaymentResult into GatewayFetchResult. */
+  /**
+   * Normalize an x402HTTPClient.processResponse() result into a
+   * GatewayFetchResult. Written against the REAL @x402/core@2.13+ client
+   * contract (there is no `result.kind` — that was never a real field, see
+   * node_modules/@x402/core/dist/cjs/client/index.d.ts and the
+   * `parsePaymentResult` impl in dist/cjs/client/index.js, verified against
+   * installed @x402/core@2.23.0, 2026-08-25):
+   *
+   *   type HTTPResourceResponse = {
+   *     status: number;
+   *     paymentStatus: 'settled' | 'settle_failed' | 'payment_required' | 'none';
+   *     body: unknown;
+   *     header?: SettleResponse | PaymentRequired;   // SettleResponse has `success`
+   *   };
+   *
+   * `paymentStatus` is 'none' whenever no PAYMENT-RESPONSE/X-PAYMENT-RESPONSE
+   * header decoded — that covers BOTH a genuinely free/passthrough route AND a
+   * paid 200 whose settlement header the gateway omitted or the client
+   * couldn't decode (the live regression this fixes: settle tx
+   * 0xa610b39978132b886b0ff73311d238a4b131fbe8cabffd475a9555b429b0913a settled
+   * on-chain and the gateway's delivery log confirmed it, but the SDK threw
+   * "gateway error 200" on the successful, delivered response because
+   * `result.kind` was always undefined against this contract). A delivered
+   * 2xx body is not punished for a missing receipt header: it's returned with
+   * `settlement: null`, same as an always-free route — never thrown.
+   */
   private shapeResult<T>(result: any, disclaimerCategory?: string): GatewayFetchResult<T> {
-    switch (result.kind) {
-      case 'success': {
-        const s = result.settleResponse ?? {};
+    const { status, paymentStatus, body, header } = result as {
+      status: number;
+      paymentStatus: 'settled' | 'settle_failed' | 'payment_required' | 'none';
+      body: unknown;
+      header?: { success?: boolean; payer?: `0x${string}`; transaction?: string; error?: string };
+    };
+
+    switch (paymentStatus) {
+      case 'settled':
         return {
-          data: result.body as T,
+          data: body as T,
           settlement: {
-            success: Boolean(s.success),
-            payer: s.payer,
-            transaction: s.transaction,
+            success: Boolean(header?.success),
+            payer: header?.payer,
+            transaction: header?.transaction,
           },
           disclaimerCategory,
         };
-      }
-      case 'passthrough':
-        // Free / no-payment route — no settlement.
-        return { data: result.body as T, settlement: null, disclaimerCategory };
+
       case 'settle_failed':
         throw new GatewayError(
           'x402 payment signed but settlement failed',
-          result.status,
-          result.body,
-          result.settleResponse,
+          status,
+          body,
+          header,
         );
+
       case 'payment_required':
         throw new GatewayError(
           'still 402 after paying — payment requirements not satisfiable',
-          result.status,
-          result.paymentRequired,
+          status,
+          body,
+          header,
         );
-      case 'error':
+
+      case 'none':
       default:
-        throw new GatewayError(
-          `gateway error${result.status ? ` ${result.status}` : ''}`,
-          result.status,
-          result.body,
-        );
+        if (status >= 200 && status < 300) {
+          // Free / passthrough route, OR a paid settle whose receipt header
+          // is missing/undecodable — the 2xx body is real either way. See
+          // the class doc comment above for the live case this covers.
+          return { data: body as T, settlement: null, disclaimerCategory };
+        }
+        throw new GatewayError(`gateway error${status ? ` ${status}` : ''}`, status, body);
     }
   }
 }
