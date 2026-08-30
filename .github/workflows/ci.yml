@@ -1,0 +1,67 @@
+# CI matrix vs the declared @x402 peer floor (L-h, 2026-08-30).
+#
+# WHY: 0.3.1 shipped with peerDependencies "@x402/core": "^2.13.0" while the
+# code required >=2.15.0 (paymentStatus contract) — retro-FD finding H1. Tests
+# only ever ran against whatever @x402/core happened to be installed locally,
+# so the false floor was never exercised. This matrix installs BOTH the exact
+# declared floor and latest, so a floor the suite can't pass on fails CI.
+# Empirical check at authoring time: floor 2.15.0 -> 56/56; 2.14.0 -> 10
+# failures (the matrix would have caught H1); latest 2.24.0 -> 56/56.
+#
+# NOTE: @x402/core + @x402/evm are OPTIONAL peers and are intentionally absent
+# from package-lock.json — the suite REQUIRES them installed (10 e2e tests load
+# the real modules), so every leg installs them explicitly with --no-save.
+# The weekly cron exists to catch a new upstream @x402 release breaking the
+# `latest` leg without waiting for our next push.
+
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 7 * * 1' # Mondays 07:00Z — upstream-drift watch on the latest leg
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        x402: [peer-floor, latest]
+    name: test (x402 ${{ matrix.x402 }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install @x402 peers at the declared floor
+        if: matrix.x402 == 'peer-floor'
+        # Derive the floor from package.json so the matrix can never drift
+        # from the manifest — bumping peerDependencies bumps this leg.
+        run: |
+          FLOOR_CORE=$(node -p "require('./package.json').peerDependencies['@x402/core'].replace(/^[~^>=\s]+/,'')")
+          FLOOR_EVM=$(node -p "require('./package.json').peerDependencies['@x402/evm'].replace(/^[~^>=\s]+/,'')")
+          echo "floor: @x402/core@${FLOOR_CORE} @x402/evm@${FLOOR_EVM}"
+          npm install --no-save "@x402/core@${FLOOR_CORE}" "@x402/evm@${FLOOR_EVM}"
+
+      - name: Install @x402 peers at latest
+        if: matrix.x402 == 'latest'
+        run: npm install --no-save @x402/core@latest @x402/evm@latest
+
+      - name: Print resolved @x402 versions
+        # fs read, not require() — @x402/core's exports map blocks ./package.json
+        run: |
+          node -p "'@x402/core ' + JSON.parse(require('fs').readFileSync('./node_modules/@x402/core/package.json','utf8')).version"
+          node -p "'@x402/evm ' + JSON.parse(require('fs').readFileSync('./node_modules/@x402/evm/package.json','utf8')).version"
+
+      - run: npx tsc --noEmit
+
+      # npm test is vitest WATCH mode — CI must use `vitest run`.
+      - run: npx vitest run
